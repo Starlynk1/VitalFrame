@@ -8,6 +8,7 @@
 ## X-Category: UnitFrames
 ## X-License: MIT
 ## X-Website: https://github.com/Starlynk1/VitalFrame
+## X-Curse-Project-ID: 1702126
 
 Locales/Locales.xml
 Compat.lua

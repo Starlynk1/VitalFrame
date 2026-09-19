@@ -4,6 +4,7 @@ local Compat = addonTable.Compat or {}
 
 local eventFrame = CreateFrame("Frame")
 local db
+local DB_VERSION = 2
 
 local defaults = {
     profile = {
@@ -36,6 +37,8 @@ local defaults = {
             y = 0,
             width = 155,
             height = 170,
+            barHeight = 16,
+            growDirection = "down",
             shown = true,
             mode = "all",
             weaponMode = "allKnown",
@@ -70,12 +73,12 @@ end
 
 local function GetXPFillUseClassColor()
     return db and db.profile and db.profile.bars and db.profile.bars.xpFill and
-               db.profile.bars.xpFill.useClassColor == true
+               Compat.ReadFlag(db.profile.bars.xpFill.useClassColor, false)
 end
 
 local function GetXPFillHideWhenMaxLevel()
     return db and db.profile and db.profile.bars and db.profile.bars.xpFill and
-               db.profile.bars.xpFill.hideWhenMaxLevel == true
+               Compat.ReadFlag(db.profile.bars.xpFill.hideWhenMaxLevel, false)
 end
 
 local function SafeNumber(fn, ...)
@@ -276,14 +279,14 @@ local function GetReputationSettings()
     db.profile.bars = db.profile.bars or {}
     db.profile.bars.reputation = db.profile.bars.reputation or {}
     if db.profile.bars.reputation.autoSwitch == nil then
-        db.profile.bars.reputation.autoSwitch = true
+        db.profile.bars.reputation.autoSwitch = 1
     end
     return db.profile.bars.reputation
 end
 
 local function GetReputationAutoSwitch()
     local settings = GetReputationSettings()
-    return settings and settings.autoSwitch == true
+    return settings and Compat.ReadFlag(settings.autoSwitch, true)
 end
 
 local function GetLastGainedFactionID()
@@ -686,35 +689,6 @@ local function GetPrimaryProfessionData(slot)
 end
 
 local function UpdateProfessionBars()
-    local ui = GetUI()
-    if not ui then return end
-
-    for slot = 1, 2 do
-        local barKey = "profession" .. slot
-        local name, rank, maxRank = GetPrimaryProfessionData(slot)
-        local hasProf = name ~= nil
-        if ui.SetBarRuntimeHidden then
-            ui.SetBarRuntimeHidden(barKey, not hasProf)
-        end
-
-        if ui.IsBarEnabled and not ui.IsBarEnabled(barKey) then
-            if ui.SetBarPercent then ui.SetBarPercent(barKey, 0) end
-            if ui.SetBarLabelText then ui.SetBarLabelText(barKey, "") end
-        elseif not hasProf then
-            if ui.SetBarPercent then ui.SetBarPercent(barKey, 0) end
-            if ui.SetBarLabelText then ui.SetBarLabelText(barKey, "") end
-        else
-            local pct = 0
-            if maxRank > 0 then pct = rank / maxRank end
-            if pct < 0 then pct = 0 end
-            if pct > 1 then pct = 1 end
-            if ui.SetBarPercent then ui.SetBarPercent(barKey, pct) end
-            if ui.SetBarLabelText then
-                ui.SetBarLabelText(barKey, string.format(L["%s (%d/%d)"], name,
-                                                         rank, maxRank))
-            end
-        end
-    end
 end
 
 local function NormalizeSkillName(name)
@@ -741,6 +715,50 @@ local function IsStatSkillName(name)
     return lower == "defense" or lower == "defence"
 end
 
+local BLOCKED_SKILL_NAMES = {
+    retribution = true,
+    holy = true,
+    protection = true,
+    arms = true,
+    fury = true,
+    discipline = true,
+    shadow = true,
+    assassination = true,
+    subtlety = true,
+    combat = true,
+    balance = true,
+    feral = true,
+    restoration = true,
+    enhancement = true,
+    elemental = true,
+    affliction = true,
+    demonology = true,
+    destruction = true,
+    arcane = true,
+    fire = true,
+    frost = true,
+    ["beast mastery"] = true,
+    marksmanship = true,
+    survival = true
+}
+
+local function IsBlockedSkillName(name)
+    local lower = NormalizeSkillName(name)
+    if lower == "" then return true end
+    if BLOCKED_SKILL_NAMES[lower] then return true end
+    return lower:find("retribution", 1, true) ~= nil
+end
+
+local function StripOneHandedPrefix(name)
+    if type(name) ~= "string" or name == "" then return nil end
+    local lower = NormalizeSkillName(name)
+    if lower == "one-handed" or lower == "one handed" then return nil end
+    local stripped = name:gsub("^[Oo]ne%-%s*[Hh]anded%s+", ""):gsub(
+                         "^[Oo]ne%s+[Hh]anded%s+", "")
+    if stripped == "" then return nil end
+    return stripped
+end
+
 local function GetSkillHeaderCategory(name)
     if not name or name == "" then return nil end
     if TRADE_SKILLS and name == TRADE_SKILLS then return "profession" end
@@ -756,7 +774,8 @@ local function GetSkillHeaderCategory(name)
         return "secondary"
     end
     if lower:find("class", 1, true) or lower:find("armor", 1, true) or
-        lower:find("language", 1, true) then
+        lower:find("language", 1, true) or lower:find("talent", 1, true) or
+        lower:find("specializ", 1, true) then
         return "skip"
     end
     return nil
@@ -1104,6 +1123,8 @@ local WEAPON_NAME_ALIASES = {
 
 local function CanonicalWeaponSkillName(name)
     local lower = NormalizeSkillName(name)
+    if lower == "one-handed" or lower == "one handed" then return "" end
+    lower = lower:gsub("^one%-handed%s+", ""):gsub("^one handed%s+", "")
     return WEAPON_NAME_ALIASES[lower] or lower
 end
 
@@ -1268,8 +1289,20 @@ local function ScanClassicSkills()
 
     local function AddSkill(name, rank, maxRank, skillCategory)
         if name == nil or name == "" then return end
+        name = StripOneHandedPrefix(name)
+        if not name or name == "" then return end
+        if IsBlockedSkillName(name) then return end
+        if skillCategory == "weapon" and not IsWeaponSkillName(name) then
+            return
+        end
+        local key = skillCategory == "weapon" and CanonicalWeaponSkillName(name) or
+                        NormalizeSkillName(name)
         for _, existing in ipairs(catalog) do
             if existing.name == name then return end
+            if skillCategory == "weapon" and existing.category == "weapon" and
+                CanonicalWeaponSkillName(existing.name) == key then
+                return
+            end
         end
         local entry = {
             name = name,
@@ -1280,11 +1313,13 @@ local function ScanClassicSkills()
         catalog[#catalog + 1] = entry
         local include = true
         local nameKey = type(name) == "string" and name or nil
-        if mode == "selected" and nameKey and selected[nameKey] ~= true then
+        if mode == "selected" and nameKey and
+            not Compat.ReadFlag(selected[nameKey], false) then
             include = false
         end
         if include and skillCategory == "weapon" and equipped and nameKey then
-            include = equipped[CanonicalWeaponSkillName(nameKey)] == true
+            include = Compat.ReadFlag(equipped[CanonicalWeaponSkillName(nameKey)],
+                                      false)
         end
         if include then visible[#visible + 1] = entry end
     end
@@ -1333,8 +1368,7 @@ local function ScanClassicSkills()
         if not info then return end
         local name = info.name
         local skillLineID = info.skillLineID
-        if (not name or name == "") and skillLineID and
-            WEAPON_SKILL_BY_ID[skillLineID] then
+        if skillLineID and WEAPON_SKILL_BY_ID[skillLineID] then
             name = WEAPON_SKILL_BY_ID[skillLineID].name
         end
         local rank = tonumber(info.rank) or 0
@@ -1359,8 +1393,8 @@ local function ScanClassicSkills()
     end
 
     for _, skill in ipairs(WEAPON_SKILL_IDS) do
-        local rank, maxRank, apiName, skillLineID = GetSkillRankByID(skill.id)
-        local name = apiName or GetSpellNameSafe(skill.spellID) or skill.name
+        local rank, maxRank, _, skillLineID = GetSkillRankByID(skill.id)
+        local name = skill.name
         local skillCategory = skill.category or "weapon"
         if rank and (rank > 0 or (maxRank and maxRank > 1)) then
             AddSkill(name, rank, maxRank or GetDefaultWeaponSkillCap(),
@@ -1401,22 +1435,17 @@ local function ScanClassicSkills()
         end
 
         local category = nil
-        local headerCount = 0
         numLines = GetNumSkillLines() or 0
         for i = 1, numLines do
             local ok, name, isHeader, _, rank, _, _, maxRank, isAbandonable =
                 pcall(GetSkillLineInfo, i)
             if ok then
                 if isHeader then
-                    headerCount = headerCount + 1
                     local headerCategory = nil
                     pcall(function()
                         headerCategory = GetSkillHeaderCategory(name)
                     end)
                     category = headerCategory
-                    if not category and headerCount == 1 then
-                        category = "weapon"
-                    end
                 elseif name ~= nil and name ~= "" then
                     local skillCategory = category
                     local secondaryName = false
@@ -1427,21 +1456,21 @@ local function ScanClassicSkills()
                     pcall(function()
                         weaponName = IsWeaponSkillName(name)
                     end)
-                    if skillCategory == "skip" then
+                    if skillCategory == "skip" or IsBlockedSkillName(name) then
                         skillCategory = nil
                     elseif skillCategory == "profession" and secondaryName then
                         skillCategory = "secondary"
                     elseif IsStatSkillName(name) then
                         skillCategory = "stat"
-                    elseif skillCategory == "weapon" or weaponName then
+                    elseif weaponName then
                         skillCategory = "weapon"
                     elseif skillCategory == "profession" or
                         skillCategory == "secondary" then
                         -- keep
                     elseif isAbandonable then
                         skillCategory = "profession"
-                    elseif (tonumber(maxRank) or 0) > 1 then
-                        skillCategory = "weapon"
+                    else
+                        skillCategory = nil
                     end
                     if skillCategory then
                         AddSkill(name, rank, maxRank, skillCategory)
@@ -1531,45 +1560,69 @@ local function CanUseSavedStringKey(value)
     return ok and usable == true
 end
 
-local function InitializeDB()
-    local playerName = UnitName("player")
-    local realmName = GetRealmName and GetRealmName()
-    local nameIsSafe = CanUseSavedStringKey(playerName) and
-                           CanUseSavedStringKey(realmName or "")
-
-    local AceDB = LibStub and LibStub("AceDB-3.0", true)
-    if AceDB and nameIsSafe then
-        local ok, result = pcall(AceDB.New, AceDB, "VitalFrameDB", defaults, true)
-        if ok and result then
-            db = result
-            return
+local function ProfileUsesNumericFlags(profile)
+    if type(profile) ~= "table" then return false end
+    local streamer = profile.streamerMode
+    if streamer == 1 or streamer == 0 then return true end
+    local enabled = profile.bars and profile.bars.enabled
+    if type(enabled) == "table" then
+        for _, value in pairs(enabled) do
+            if value == 1 or value == 0 then return true end
         end
     end
+    return false
+end
 
-    VitalFrameDB = VitalFrameDB or {}
-    VitalFrameDB.profiles = VitalFrameDB.profiles or
-                                {Default = CopyDefaults(defaults.profile)}
-    VitalFrameDB.global = VitalFrameDB.global or CopyDefaults(defaults.global)
+local function InitializeDB()
+    -- SavedVariables are only available at ADDON_LOADED, not during file load.
+    local existing = _G.VitalFrameDB
+    local existingVersion = existing and tonumber(existing.dbVersion)
+    local alreadyMigrated = type(existing) == "table" and
+                                ProfileUsesNumericFlags(
+                                    existing.profiles and
+                                        existing.profiles.Default)
+    local needsWipe = type(existing) ~= "table" or
+                          (existingVersion ~= DB_VERSION and not alreadyMigrated)
+    if needsWipe and Compat.IsForeverClient and Compat.IsForeverClient() then
+        existing = {}
+    elseif type(existing) ~= "table" then
+        existing = {}
+    end
+
+    VitalFrameDB = existing
+    _G.VitalFrameDB = VitalFrameDB
+    VitalFrameDB.dbVersion = DB_VERSION
+    VitalFrameDB.profiles = VitalFrameDB.profiles or {}
+    VitalFrameDB.global = VitalFrameDB.global or {}
     VitalFrameDB.profileKeys = VitalFrameDB.profileKeys or {}
+    VitalFrameDB.profiles.Default = VitalFrameDB.profiles.Default or
+                                        CopyDefaults(defaults.profile)
     MergeDefaults(VitalFrameDB.profiles.Default, defaults.profile)
     MergeDefaults(VitalFrameDB.global, defaults.global)
 
-    local characterKey = "DefaultChar"
-    if nameIsSafe then
-        characterKey = playerName .. " - " .. realmName
+    local playerName = UnitName("player")
+    local realmName = GetRealmName and GetRealmName()
+    if CanUseSavedStringKey(playerName) and
+        CanUseSavedStringKey(realmName or "") then
+        VitalFrameDB.profileKeys[playerName .. " - " .. realmName] = "Default"
     end
-    local profileName = VitalFrameDB.profileKeys[characterKey] or "Default"
-    if nameIsSafe then
-        VitalFrameDB.profileKeys[characterKey] = profileName
-    end
-    VitalFrameDB.profiles[profileName] = VitalFrameDB.profiles[profileName] or
-                                             CopyDefaults(defaults.profile)
-    MergeDefaults(VitalFrameDB.profiles[profileName], defaults.profile)
 
     db = {
-        profile = VitalFrameDB.profiles[profileName],
+        profile = VitalFrameDB.profiles.Default,
         global = VitalFrameDB.global
     }
+end
+
+local function ApplySavedSettingsNow()
+    local ui = GetUI()
+    if not ui then return end
+    if ui.CreateVitalFrame then ui.CreateVitalFrame() end
+    if ui.CreateSkillsFrame then ui.CreateSkillsFrame() end
+    if ui.ApplySavedSettings then
+        ui.ApplySavedSettings()
+    elseif ui.ApplySavedFrameLayout then
+        ui.ApplySavedFrameLayout()
+    end
 end
 
 SLASH_VITALFRAME1 = "/vitalframe"
@@ -1640,6 +1693,7 @@ registerEvent(eventFrame, "ADDON_LOADED")
 registerEvent(eventFrame, "EDIT_MODE_LAYOUTS_UPDATED")
 registerEvent(eventFrame, "PLAYER_LOGIN")
 registerEvent(eventFrame, "PLAYER_ENTERING_WORLD")
+registerEvent(eventFrame, "PLAYER_LOGOUT")
 registerEvent(eventFrame, "PLAYER_XP_UPDATE")
 registerEvent(eventFrame, "PLAYER_LEVEL_UP")
 registerEvent(eventFrame, "PLAYER_MAX_LEVEL_UPDATE")
@@ -1665,20 +1719,12 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
 
     if event == "ADDON_LOADED" then
         local loadedName = ...
-        if loadedName == addonName and not db then InitializeDB() end
-    elseif event == "PLAYER_LOGIN" or event == "PLAYER_ENTERING_WORLD" or
-        event == "EDIT_MODE_LAYOUTS_UPDATED" then
+        if loadedName == addonName then InitializeDB() end
+    elseif event == "PLAYER_LOGOUT" then
+        if ui.SaveAllFramePositions then ui.SaveAllFramePositions() end
+    elseif event == "PLAYER_LOGIN" then
         if not db then InitializeDB() end
-        ui.CreateVitalFrame()
-        if ui.CreateSkillsFrame then ui.CreateSkillsFrame() end
-        if ui.ScheduleApplySavedFrameLayout then
-            ui.ScheduleApplySavedFrameLayout()
-        elseif ui.ApplySavedFrameLayout then
-            ui.ApplySavedFrameLayout()
-        end
-        if ui.ApplySavedSkillsFrameLayout then
-            ui.ApplySavedSkillsFrameLayout()
-        end
+        ApplySavedSettingsNow()
         ui.UpdateEditModeDragState()
         UpdateLevelText(UnitLevel("player"))
         UpdateXPFillBar()
@@ -1688,13 +1734,22 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         UpdateSkillsFrame()
         UpdateReputationBar()
         if ui.UpdateNameText then ui.UpdateNameText() end
-        if event == "PLAYER_LOGIN" then
-            if ui.HasEditMode and ui.HasEditMode() then
-                PrintMessage(L["Loaded. Commands: /vitalframe (or /vf)."])
-            else
-                PrintMessage(L["Loaded. Commands: /vitalframe (or /vf). Use /vf config to move and edit."])
-            end
+        if ui.HasEditMode and ui.HasEditMode() then
+            PrintMessage(L["Loaded. Commands: /vitalframe (or /vf)."])
+        else
+            PrintMessage(L["Loaded. Commands: /vitalframe (or /vf). Use /vf config to move and edit."])
         end
+    elseif event == "PLAYER_ENTERING_WORLD" or
+        event == "EDIT_MODE_LAYOUTS_UPDATED" then
+        if not db then InitializeDB() end
+        UpdateLevelText(UnitLevel("player"))
+        UpdateXPFillBar()
+        UpdateXPRemainingBar()
+        UpdatePetXpBar()
+        UpdateProfessionBars()
+        UpdateSkillsFrame()
+        UpdateReputationBar()
+        if ui.UpdateNameText then ui.UpdateNameText() end
     elseif event == "UPDATE_EXHAUSTION" then
         UpdateXPFillBar()
         UpdateXPRemainingBar()

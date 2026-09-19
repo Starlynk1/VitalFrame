@@ -61,3 +61,25 @@ function Compat.RegisterEvent(frame, event)
     if not frame or not event then return false end
     return pcall(frame.RegisterEvent, frame, event)
 end
+
+function Compat.ReadFlag(value, default)
+    if value == true or value == 1 or value == "1" or value == "true" then
+        return true
+    end
+    if value == false or value == 0 or value == "0" or value == "false" then
+        return false
+    end
+    if value == nil then return default == true end
+    local ok, asNumber = pcall(tonumber, value)
+    if ok and asNumber == 1 then return true end
+    if ok and asNumber == 0 then return false end
+    return default == true
+end
+
+function Compat.WriteFlag(enabled)
+    local on = enabled == true or enabled == 1 or enabled == "1"
+    if Compat.IsForeverClient and Compat.IsForeverClient() then
+        return on and 1 or 0
+    end
+    return on
+end

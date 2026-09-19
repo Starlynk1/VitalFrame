@@ -12,9 +12,7 @@ local layoutFocus = nil
 local SetLayoutFocus
 local vitalFrameSettingsPanel
 local suppressNextFocusClear = false
-local BAR_ORDER = {
-    "xpFill", "petXp", "xpRemaining", "reputation", "profession1", "profession2"
-}
+local BAR_ORDER = {"xpFill", "petXp", "xpRemaining", "reputation"}
 
 local layoutUnlocked = false
 
@@ -34,9 +32,7 @@ end
 local function GetSettingsBarOrder()
     local keys = {}
     for _, key in ipairs(BAR_ORDER) do
-        if key == "profession1" or key == "profession2" then
-            -- Crafting uses one shared settings checkbox.
-        elseif key == "xpRemaining" then
+        if key == "xpRemaining" then
             -- XP Remaining is created as a subset of the XP checkbox.
         elseif key ~= "petXp" or SupportsPetXpLeveling() then
             keys[#keys + 1] = key
@@ -50,29 +46,26 @@ local BAR_DEFS = {
     xpFill = {label = L["XP"], color = {0.34, 0.69, 0.17}},
     petXp = {label = L["Pet XP"], color = {0.46, 0, 0.68}},
     xpRemaining = {label = L["XP Remaining"], color = {1, 0.82, 0}},
-    profession1 = {label = L["Crafting Skills"], color = {0.85, 0.55, 0.20}},
-    profession2 = {label = L["Crafting Skills"], color = {0.75, 0.42, 0.14}},
     reputation = {label = L["Reputation"], color = {0.10, 0.70, 0.30}}
 }
 
 local FIXED_BAR_HEIGHT = 30
 local PET_BAR_HEIGHT = math.floor(FIXED_BAR_HEIGHT * 2 / 3)
 local XP_BAR_HEIGHT = math.floor((FIXED_BAR_HEIGHT + PET_BAR_HEIGHT) / 2)
-local CRAFTING_BAR_HEIGHT = math.floor(FIXED_BAR_HEIGHT * 0.4)
 local XP_BAR_KEYS = {
     xpFill = true,
     xpRemaining = true,
     reputation = true
 }
-local CRAFTING_BAR_KEYS = {
-    profession1 = true,
-    profession2 = true
-}
 
+local DEFAULT_FRAME_WIDTH = 200
 local DEFAULT_FRAME_HEIGHT = 200
+local FRAME_MIN_WIDTH, FRAME_MAX_WIDTH = 200, 600
+local FRAME_MIN_HEIGHT, FRAME_MAX_HEIGHT = 100, 300
+local MIN_FIT_BAR_HEIGHT = 4
+local LEVEL_MIN_FONT_SIZE = 10
 
 local function GetBaseBarHeight(barKey)
-    if CRAFTING_BAR_KEYS[barKey] then return CRAFTING_BAR_HEIGHT end
     if XP_BAR_KEYS[barKey] then return XP_BAR_HEIGHT end
     if barKey == "petXp" then return PET_BAR_HEIGHT end
     return FIXED_BAR_HEIGHT
@@ -95,11 +88,23 @@ local THEME_COLORS = {
 
 local UpdateProgressBarLayout
 local UpdateEditModeDragState
+local CreateVitalFrameSettings
 local levelLayoutRetryPending = false
 
 local function GetDB()
     if addonTable and addonTable.GetDB then return addonTable.GetDB() end
     return nil
+end
+
+local function ReadFlag(value, default)
+    if Compat.ReadFlag then return Compat.ReadFlag(value, default) end
+    if value == nil then return default == true end
+    return value == true or value == 1
+end
+
+local function WriteFlag(enabled)
+    if Compat.WriteFlag then return Compat.WriteFlag(enabled) end
+    return enabled and 1 or 0
 end
 
 local function NormalizeTheme(theme)
@@ -159,24 +164,24 @@ end
 local function GetAutoScaleBars()
     local db = GetDB()
     if not db or not db.profile or not db.profile.bars then return false end
-    return db.profile.bars.autoScale == true
+    return ReadFlag(db.profile.bars.autoScale, false)
 end
 
 local function SetAutoScaleBars(enabled)
     local db = GetDB()
     if not db or not db.profile then return end
     db.profile.bars = db.profile.bars or {}
-    db.profile.bars.autoScale = enabled and true or false
+    db.profile.bars.autoScale = WriteFlag(enabled)
     UpdateProgressBarLayout()
 end
 
-local function GetBarHeight(barKey)
+local function GetDesiredBarHeight(barKey)
     local base = GetBaseBarHeight(barKey)
     if not GetAutoScaleBars() then return base end
 
     local height = vitalFrameFrame and vitalFrameFrame:GetHeight() or
                        DEFAULT_FRAME_HEIGHT
-    if height < DEFAULT_FRAME_HEIGHT then height = DEFAULT_FRAME_HEIGHT end
+    if height <= DEFAULT_FRAME_HEIGHT then return base end
     local scaled = math.floor(base * (height / DEFAULT_FRAME_HEIGHT) + 0.5)
     if scaled < 1 then scaled = 1 end
     return scaled
@@ -186,13 +191,9 @@ local function IsBarEnabled(barKey)
     local db = GetDB()
     if not db or not db.profile or not db.profile.bars or
         not db.profile.bars.enabled then return true end
-    local settingKey = barKey
-    if barKey == "profession1" or barKey == "profession2" then
-        settingKey = "crafting"
-    end
-    local v = db.profile.bars.enabled[settingKey]
+    local v = db.profile.bars.enabled[barKey]
     if v == nil then return true end
-    return v == true
+    return ReadFlag(v, true)
 end
 
 local function IsBarRuntimeHidden(barKey)
@@ -223,7 +224,7 @@ local function SetBarEnabled(barKey, enabled)
     if not db or not db.profile then return end
     db.profile.bars = db.profile.bars or {}
     db.profile.bars.enabled = db.profile.bars.enabled or {}
-    db.profile.bars.enabled[barKey] = enabled and true or false
+    db.profile.bars.enabled[barKey] = WriteFlag(enabled)
     UpdateProgressBarLayout()
     if addonTable and addonTable.RefreshAllData then
         addonTable.RefreshAllData()
@@ -238,33 +239,33 @@ local function GetXPFillOption(optionKey)
     db.profile.bars.xpFill = db.profile.bars.xpFill or {}
 
     if db.profile.bars.xpFill.useClassColor == nil then
-        db.profile.bars.xpFill.useClassColor = false
+        db.profile.bars.xpFill.useClassColor = 0
     end
 
     if db.profile.bars.xpFill.hideWhenMaxLevel == nil then
-        db.profile.bars.xpFill.hideWhenMaxLevel = false
+        db.profile.bars.xpFill.hideWhenMaxLevel = 0
     end
 
-    return db.profile.bars.xpFill[optionKey] == true
+    return ReadFlag(db.profile.bars.xpFill[optionKey], false)
 end
 
 local function GetHideBlizzardWatchBar()
     local db = GetDB()
     if not db or not db.profile then return true end
     if db.profile.hideBlizzardWatchBar == nil then return true end
-    return db.profile.hideBlizzardWatchBar == true
+    return ReadFlag(db.profile.hideBlizzardWatchBar, true)
 end
 
 local function SetHideBlizzardWatchBar(enabled)
     local db = GetDB()
     if not db or not db.profile then return end
-    db.profile.hideBlizzardWatchBar = enabled and true or false
+    db.profile.hideBlizzardWatchBar = WriteFlag(enabled)
 end
 
 local function GetStreamerMode()
     local db = GetDB()
     if not db or not db.profile then return false end
-    return db.profile.streamerMode == true
+    return ReadFlag(db.profile.streamerMode, false)
 end
 
 local streamerModeActive = false
@@ -290,8 +291,8 @@ end
 local function SetStreamerMode(enabled)
     local db = GetDB()
     if not db or not db.profile then return end
-    db.profile.streamerMode = enabled and true or false
-    streamerModeActive = db.profile.streamerMode == true
+    db.profile.streamerMode = WriteFlag(enabled)
+    streamerModeActive = ReadFlag(db.profile.streamerMode, false)
     RefreshCachedDisplayName()
 end
 
@@ -591,7 +592,7 @@ local function SetXPFillOption(optionKey, enabled)
 
     db.profile.bars = db.profile.bars or {}
     db.profile.bars.xpFill = db.profile.bars.xpFill or {}
-    db.profile.bars.xpFill[optionKey] = enabled and true or false
+    db.profile.bars.xpFill[optionKey] = WriteFlag(enabled)
 end
 
 local function GetReputationAutoSwitch()
@@ -601,9 +602,9 @@ local function GetReputationAutoSwitch()
     db.profile.bars = db.profile.bars or {}
     db.profile.bars.reputation = db.profile.bars.reputation or {}
     if db.profile.bars.reputation.autoSwitch == nil then
-        db.profile.bars.reputation.autoSwitch = true
+        db.profile.bars.reputation.autoSwitch = 1
     end
-    return db.profile.bars.reputation.autoSwitch == true
+    return ReadFlag(db.profile.bars.reputation.autoSwitch, true)
 end
 
 local function SetReputationAutoSwitch(enabled)
@@ -612,7 +613,7 @@ local function SetReputationAutoSwitch(enabled)
 
     db.profile.bars = db.profile.bars or {}
     db.profile.bars.reputation = db.profile.bars.reputation or {}
-    db.profile.bars.reputation.autoSwitch = enabled and true or false
+    db.profile.bars.reputation.autoSwitch = WriteFlag(enabled)
 end
 
 local function SetBarPercent(barKey, percent)
@@ -656,8 +657,7 @@ local function SetBarLabelText(barKey, text)
     if not vitalFrameFrame or not vitalFrameFrame.ProgressBarsByKey then return end
     local bar = vitalFrameFrame.ProgressBarsByKey[barKey]
     if not bar or not bar.LabelText then return end
-    if barKey == "reputation" or barKey == "profession1" or
-        barKey == "profession2" then
+    if barKey == "reputation" then
         bar.LabelText:SetFontObject(GameFontHighlightSmall)
     else
         bar.LabelText:SetFontObject(GameFontHighlight)
@@ -690,13 +690,21 @@ local function PrintMessage(msg)
     end
 end
 
-local function LockFrameToAddonPosition(frame)
+local MAIN_FRAME_NAME = "VitalFrameMain"
+
+local function FrameHasReadablePosition(frame)
+    if not frame then return false end
+    local ok, left = pcall(function() return tonumber(frame:GetLeft()) end)
+    return ok and left ~= nil
+end
+
+local function AllowClientFramePosition(frame)
     frame = frame or vitalFrameFrame
     if not frame then return end
     if frame.SetDontSavePosition then
-        pcall(frame.SetDontSavePosition, frame, true)
+        pcall(frame.SetDontSavePosition, frame, false)
     end
-    if frame.SetUserPlaced then pcall(frame.SetUserPlaced, frame, false) end
+    if frame.SetUserPlaced then pcall(frame.SetUserPlaced, frame, true) end
 end
 
 local function SaveFramePositionFromOffsets(x, y)
@@ -827,7 +835,7 @@ local function BakeFrameToUIParent(deltaX, deltaY)
     if vitalFrameFrame.ClearFrameSnap then vitalFrameFrame:ClearFrameSnap() end
     vitalFrameFrame:ClearAllPoints()
     vitalFrameFrame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", offsetX, offsetY)
-    LockFrameToAddonPosition(vitalFrameFrame)
+    AllowClientFramePosition(vitalFrameFrame)
     SaveFramePositionFromOffsets(offsetX, offsetY)
 end
 
@@ -905,7 +913,6 @@ local function BeginEditModeDrag(frame)
         vitalFrameFrame:ClearFrameSnap()
     end
     frame:StartMoving()
-    LockFrameToAddonPosition(frame)
     if HasMagneticPreviewAPI(frame) and EditModeManagerFrame and
         EditModeManagerFrame.SetSnapPreviewFrame then
         EditModeManagerFrame:SetSnapPreviewFrame(frame)
@@ -922,8 +929,7 @@ local function FinishEditModeDrag(frame)
         EditModeManagerFrame:IsSnapEnabled() then
         EditModeMagnetismManager:ApplyMagnetism(frame)
     end
-    BakeFrameToUIParent(0, 0)
-    LockFrameToAddonPosition(frame)
+    AllowClientFramePosition(frame)
     SaveFramePosition()
 end
 
@@ -935,6 +941,8 @@ UpdateProgressBarLayout = function()
                               borderInset
     local usableWidth = vitalFrameFrame:GetWidth() - (borderInset * 2)
     local frameHeight = vitalFrameFrame:GetHeight()
+
+    UpdateHeaderLayout()
 
     local enabledKeys = GetEnabledBarKeys()
     local barCount = #enabledKeys
@@ -950,13 +958,42 @@ UpdateProgressBarLayout = function()
         end
     end
 
+    local headerReserve = 10
+    if vitalFrameFrame.HeaderGroup then
+        headerReserve = headerReserve +
+                            (vitalFrameFrame.HeaderGroup:GetHeight() or
+                                NAME_FIRST_FONT_SIZE)
+    else
+        headerReserve = headerReserve + NAME_FIRST_FONT_SIZE
+    end
+    local minLevelSpace = LEVEL_MIN_FONT_SIZE +
+                              (LEVEL_TEXT_VERTICAL_PADDING * 2)
+    local desiredBarsHeight = 0
+    for _, key in ipairs(enabledKeys) do
+        desiredBarsHeight = desiredBarsHeight + GetDesiredBarHeight(key)
+    end
+    local maxBarsHeight = frameHeight - bottomPadding - headerReserve -
+                              minLevelSpace
+    if barCount > 0 and maxBarsHeight < (MIN_FIT_BAR_HEIGHT * barCount) then
+        maxBarsHeight = MIN_FIT_BAR_HEIGHT * barCount
+    end
+    local fitScale = 1
+    if desiredBarsHeight > 0 and maxBarsHeight > 0 and desiredBarsHeight >
+        maxBarsHeight then
+        fitScale = maxBarsHeight / desiredBarsHeight
+    end
+
+    local function GetFittedBarHeight(barKey)
+        local height = math.floor(GetDesiredBarHeight(barKey) * fitScale + 0.5)
+        if height < MIN_FIT_BAR_HEIGHT then height = MIN_FIT_BAR_HEIGHT end
+        return height
+    end
+
     local firstVisibleBar = nil
     if barCount >= 1 then
         local barsHeight = 0
-        for _, key in ipairs(BAR_ORDER) do
-            if ShouldShowBar(key) then
-                barsHeight = barsHeight + GetBarHeight(key)
-            end
+        for _, key in ipairs(enabledKeys) do
+            barsHeight = barsHeight + GetFittedBarHeight(key)
         end
 
         local topPadding = frameHeight - bottomPadding - barsHeight
@@ -967,8 +1004,14 @@ UpdateProgressBarLayout = function()
             local bar = vitalFrameFrame.ProgressBarsByKey[key]
             if bar and ShouldShowBar(key) then
                 bar:ClearAllPoints()
-                local barHeight = GetBarHeight(key)
+                local barHeight = GetFittedBarHeight(key)
                 bar:SetSize(usableWidth, barHeight)
+                if bar.LabelText then
+                    local fontPath, _, flags = bar.LabelText:GetFont()
+                    local labelSize = math.max(8, math.min(12, barHeight - 2))
+                    bar.LabelText:SetFont(fontPath or "Fonts\\FRIZQT__.TTF",
+                                          labelSize, flags)
+                end
                 if not previousBar then
                     firstVisibleBar = bar
                     bar:SetPoint("TOP", vitalFrameFrame, "TOP", 0, -topPadding)
@@ -994,8 +1037,6 @@ UpdateProgressBarLayout = function()
         end
     end
 
-    UpdateHeaderLayout()
-
     if vitalFrameFrame.LevelText and vitalFrameFrame.NameText then
         local nameBottom = GetHeaderNameBottom()
         local frameBottom = vitalFrameFrame:GetBottom()
@@ -1008,17 +1049,17 @@ UpdateProgressBarLayout = function()
             local availableHeight = math.floor(
                                         (nameBottom - barTop) -
                                             (LEVEL_TEXT_VERTICAL_PADDING * 2))
-            if availableHeight < NAME_FIRST_FONT_SIZE then
-                availableHeight = NAME_FIRST_FONT_SIZE
+            if availableHeight < LEVEL_MIN_FONT_SIZE then
+                availableHeight = LEVEL_MIN_FONT_SIZE
             end
 
             local fontPath, _, flags = vitalFrameFrame.LevelText:GetFont()
-            local size = math.max(NAME_FIRST_FONT_SIZE, availableHeight)
+            local size = math.max(LEVEL_MIN_FONT_SIZE, availableHeight)
             vitalFrameFrame.LevelText:SetFont(fontPath or "Fonts\\FRIZQT__.TTF",
                                             size, flags)
 
             local textHeight = vitalFrameFrame.LevelText:GetStringHeight() or size
-            while size > NAME_FIRST_FONT_SIZE and textHeight > availableHeight do
+            while size > LEVEL_MIN_FONT_SIZE and textHeight > availableHeight do
                 size = size - 1
                 vitalFrameFrame.LevelText:SetFont(fontPath or
                                                     "Fonts\\FRIZQT__.TTF", size,
@@ -1048,13 +1089,12 @@ end
 local function ApplyFrameSize(width, height)
     if not vitalFrameFrame then return end
 
-    local wMinSize, wMaxSize = 200, 600
-    local hMinSize, hMaxSize = 200, 300
-    local w = math.max(wMinSize, math.min(wMaxSize, math.floor(
-                                              width or vitalFrameFrame:GetWidth())))
-    local h = math.max(hMinSize, math.min(hMaxSize, math.floor(
-                                              height or
-                                                  vitalFrameFrame:GetHeight())))
+    local w = math.max(FRAME_MIN_WIDTH, math.min(FRAME_MAX_WIDTH, math.floor(
+                                                     width or
+                                                         vitalFrameFrame:GetWidth())))
+    local h = math.max(FRAME_MIN_HEIGHT, math.min(FRAME_MAX_HEIGHT, math.floor(
+                                                      height or
+                                                          vitalFrameFrame:GetHeight())))
 
     vitalFrameFrame:SetSize(w, h)
     UpdateProgressBarLayout()
@@ -1148,20 +1188,26 @@ local function AnchorSettingsPanel()
 end
 
 local function UpdateSettingsPanelVisibility()
-    if not vitalFrameSettingsPanel or not vitalFrameFrame then return end
+    if not vitalFrameFrame then return end
 
     local editModeShown = IsEditModeOpen()
     local shouldShow = editModeShown and layoutFocus == "main" and
                            vitalFrameFrame:IsShown()
+    if shouldShow and not vitalFrameSettingsPanel then
+        CreateVitalFrameSettings(vitalFrameFrame)
+    end
+    if not vitalFrameSettingsPanel then return end
     if shouldShow then AnchorSettingsPanel() end
 
     vitalFrameSettingsPanel:SetShown(shouldShow)
 
     if shouldShow then
         local currentWidth =
-            ClampSizeValue(vitalFrameFrame:GetWidth(), 200, 600) or 200
+            ClampSizeValue(vitalFrameFrame:GetWidth(), FRAME_MIN_WIDTH,
+                           FRAME_MAX_WIDTH) or DEFAULT_FRAME_WIDTH
         local currentHeight =
-            ClampSizeValue(vitalFrameFrame:GetHeight(), 200, 300) or 200
+            ClampSizeValue(vitalFrameFrame:GetHeight(), FRAME_MIN_HEIGHT,
+                           FRAME_MAX_HEIGHT) or DEFAULT_FRAME_HEIGHT
         if vitalFrameSettingsPanel.widthSlider then
             vitalFrameSettingsPanel.widthSlider:SetValue(currentWidth)
         end
@@ -1297,7 +1343,7 @@ local function SetVitalFrameShown(shouldShow)
 
     local db = GetDB()
     if db and db.profile and db.profile.frame then
-        db.profile.frame.shown = shouldShow and true or false
+        db.profile.frame.shown = WriteFlag(shouldShow)
     end
     UpdateEditModeDragState()
     ApplyBlizzardWatchBarVisibility()
@@ -1309,19 +1355,46 @@ local function ApplySavedFrameLayout()
     local frameSettings = db and db.profile and db.profile.frame
     if not frameSettings then return end
 
-    local width = tonumber(frameSettings.width) or 200
-    local height = tonumber(frameSettings.height) or 200
-    local point = frameSettings.point or "CENTER"
-    local x = tonumber(frameSettings.x) or 0
-    local y = tonumber(frameSettings.y) or 0
+    local width = ClampSizeValue(frameSettings.width, FRAME_MIN_WIDTH,
+                                FRAME_MAX_WIDTH) or DEFAULT_FRAME_WIDTH
+    local height = ClampSizeValue(frameSettings.height, FRAME_MIN_HEIGHT,
+                                 FRAME_MAX_HEIGHT) or DEFAULT_FRAME_HEIGHT
 
-    LockFrameToAddonPosition(vitalFrameFrame)
-    vitalFrameFrame:ClearAllPoints()
-    vitalFrameFrame:SetPoint(point, UIParent, point, x, y)
     vitalFrameFrame:SetSize(width, height)
-    LockFrameToAddonPosition(vitalFrameFrame)
+    AllowClientFramePosition(vitalFrameFrame)
     UpdateProgressBarLayout()
     if UI.ApplySavedSkillsFrameLayout then UI.ApplySavedSkillsFrameLayout() end
+end
+
+local function ApplySavedSettings()
+    local db = GetDB()
+    if not db or not db.profile then return end
+
+    ApplySavedFrameLayout()
+    ApplyFrameTheme()
+
+    streamerModeActive = ReadFlag(db.profile.streamerMode, false)
+    ApplyStreamerUnitNames()
+    ApplyBlizzardWatchBarVisibility()
+
+    if db.profile.frame and not ReadFlag(db.profile.frame.shown, true) then
+        if vitalFrameFrame then vitalFrameFrame:Hide() end
+    elseif vitalFrameFrame then
+        vitalFrameFrame:Show()
+    end
+
+    if UI.SetSkillsFrameShown then
+        local showSkills = true
+        if db.profile.skillsFrame then
+            showSkills = ReadFlag(db.profile.skillsFrame.shown, true)
+        end
+        UI.SetSkillsFrameShown(showSkills)
+    end
+
+    UpdateProgressBarLayout()
+    if UI.UpdateSkillsFrameEditMode then UI.UpdateSkillsFrameEditMode() end
+    if vitalFrameSettingsPanel then UpdateSettingsPanelVisibility() end
+    if UI.RefreshSkillsSettings then UI.RefreshSkillsSettings() end
 end
 
 local layoutRestoreToken = 0
@@ -1343,6 +1416,7 @@ local function ResetToDefaults()
     vitalFrameFrame:ClearAllPoints()
     vitalFrameFrame:SetPoint("CENTER")
     ApplyFrameSize(200, 200)
+    AllowClientFramePosition(vitalFrameFrame)
     SaveFramePosition()
     if vitalFrameSettingsPanel and vitalFrameSettingsPanel.widthValueText then
         vitalFrameSettingsPanel.widthValueText:SetText("200")
@@ -1355,84 +1429,14 @@ local function ResetToDefaults()
     ApplyFrameTheme()
 end
 
-local function CreateVitalFrame()
-    if vitalFrameFrame then return end
-
-    local db = GetDB()
-    local frameSettings = db and db.profile and db.profile.frame
-    local frameWidth = frameSettings and frameSettings.width or 200
-    local frameHeight = frameSettings and frameSettings.height or 200
-
-    local frame = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
-    frame:SetSize(frameWidth, frameHeight)
-    LockFrameToAddonPosition(frame)
-
-    if frameSettings then
-        frame:SetPoint(frameSettings.point or "CENTER", UIParent,
-                       frameSettings.point or "CENTER", frameSettings.x or 0,
-                       frameSettings.y or 0)
-    else
-        frame:SetPoint("CENTER")
-    end
-
-    frame:SetToplevel(true)
-    frame:SetMovable(true)
-    frame:EnableMouse(false)
-    frame:RegisterForDrag("LeftButton")
-    frame:SetClampedToScreen(true)
-    frame:SetFrameStrata("LOW")
-    frame:SetFrameLevel(1)
-    frame:SetAlpha(1)
-
-    frame:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true,
-        tileSize = 16,
-        edgeSize = 16,
-        insets = {left = 4, right = 4, top = 4, bottom = 4}
-    })
-    frame:SetBackdropColor(0, 0, 0, 0.5)
-    frame:SetBackdropBorderColor(0.83, 0.66, 0.27, 1)
-
-    local selection = CreateFrame("Frame", nil, frame, "BackdropTemplate")
-    selection:SetAllPoints(frame)
-    selection:SetFrameLevel(frame:GetFrameLevel() + 10)
-    selection:EnableMouse(false)
-
-    selection.Background = selection:CreateTexture(nil, "BACKGROUND")
-    selection.Background:SetTexture(
-        "Interface/AddOns/VitalFrame/Art/EditModeHighlighted")
-    if selection.Background.SetTextureSliceMargins then
-        pcall(selection.Background.SetTextureSliceMargins,
-              selection.Background, 16, 16, 16, 16)
-    end
-    if selection.Background.SetTextureSliceMode then
-        pcall(selection.Background.SetTextureSliceMode, selection.Background, 0)
-    end
-    selection.Background:SetPoint("TOPLEFT", selection, "TOPLEFT", -8, 8)
-    selection.Background:SetPoint("BOTTOMRIGHT", selection, "BOTTOMRIGHT", 8, -8)
-    selection:Hide()
-
-    selection.EditHint = selection:CreateFontString(nil, "OVERLAY",
-                                                    "GameFontHighlightLarge")
-    selection.EditHint:SetPoint("CENTER", selection, "CENTER", 0, 0)
-    selection.EditHint:SetWidth(176)
-    selection.EditHint:SetJustifyH("CENTER")
-    selection.EditHint:SetWordWrap(false)
-
-    local hintFont = select(1, selection.EditHint:GetFont())
-    selection.EditHint:SetFont(hintFont or "Fonts\\FRIZQT__.TTF", 26, nil)
-    selection.EditHint:SetText(L["Click To Edit"])
-    selection.EditHint:SetTextColor(1, 1, 1, 1)
-    selection.EditHint:Hide()
-    frame.Selection = selection
-    AttachEditModeSnapAPI(frame)
-
-    vitalFrameSelection = selection
-
+function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
+    if vitalFrameSettingsPanel then return end
+    frame = frame or vitalFrameFrame
+    if not frame then return end
+    frameWidth = frameWidth or frame:GetWidth()
+    frameHeight = frameHeight or frame:GetHeight()
     local settingsPanel = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
-    settingsPanel:SetSize(360, 660)
+    settingsPanel:SetSize(360, 632)
     settingsPanel:SetFrameStrata("DIALOG")
     settingsPanel:SetFrameLevel(frame:GetFrameLevel() + 20)
     settingsPanel:SetToplevel(true)
@@ -1499,7 +1503,7 @@ local function CreateVitalFrame()
     local widthControl, widthSlider = CreateSizeSlider("VitalFrameWidthSlider",
                                                        settingsPanel)
     widthControl:SetPoint("LEFT", widthLabel, "LEFT", 60, 0)
-    widthSlider:SetMinMaxValues(200, 600)
+    widthSlider:SetMinMaxValues(FRAME_MIN_WIDTH, FRAME_MAX_WIDTH)
     widthSlider:SetValueStep(10)
     if widthSlider.SetObeyStepOnDrag then
         pcall(widthSlider.SetObeyStepOnDrag, widthSlider, true)
@@ -1524,7 +1528,7 @@ local function CreateVitalFrame()
     widthValueText:SetText(tostring(frameWidth))
 
     widthSlider:SetScript("OnValueChanged", function(_, value)
-        local v = ClampSizeValue(value, 200, 600)
+        local v = ClampSizeValue(value, FRAME_MIN_WIDTH, FRAME_MAX_WIDTH)
         if not vitalFrameFrame or not v then return end
         ApplyFrameSize(v, vitalFrameFrame:GetHeight())
         if widthValueText then widthValueText:SetText(tostring(v)) end
@@ -1547,7 +1551,7 @@ local function CreateVitalFrame()
     local heightControl, heightSlider =
         CreateSizeSlider("VitalFrameHeightSlider", settingsPanel)
     heightControl:SetPoint("LEFT", heightLabel, "LEFT", 60, 0)
-    heightSlider:SetMinMaxValues(200, 300)
+    heightSlider:SetMinMaxValues(FRAME_MIN_HEIGHT, FRAME_MAX_HEIGHT)
     heightSlider:SetValueStep(10)
     if heightSlider.SetObeyStepOnDrag then
         pcall(heightSlider.SetObeyStepOnDrag, heightSlider, true)
@@ -1555,7 +1559,7 @@ local function CreateVitalFrame()
 
     if heightControl.MinText then
         heightControl.MinText:Hide()
-        heightControl.MinText:SetText("200")
+        heightControl.MinText:SetText(tostring(FRAME_MIN_HEIGHT))
     end
     if heightControl.MaxText then
         heightControl.MaxText:Hide()
@@ -1572,7 +1576,7 @@ local function CreateVitalFrame()
     heightValueText:SetText(tostring(frameHeight))
 
     heightSlider:SetScript("OnValueChanged", function(_, value)
-        local v = ClampSizeValue(value, 200, 300)
+        local v = ClampSizeValue(value, FRAME_MIN_HEIGHT, FRAME_MAX_HEIGHT)
         if not vitalFrameFrame or not v then return end
         if heightValueText then heightValueText:SetText(tostring(v)) end
         ApplyFrameSize(vitalFrameFrame:GetWidth(), v)
@@ -1595,7 +1599,8 @@ local function CreateVitalFrame()
     autoScaleBarsCheck:SetChecked(GetAutoScaleBars())
     settingsPanel.autoScaleBarsCheck = autoScaleBarsCheck
     autoScaleBarsCheck:SetScript("OnClick", function(self)
-        SetAutoScaleBars(self:GetChecked() == true)
+        SetAutoScaleBars(not GetAutoScaleBars())
+        self:SetChecked(GetAutoScaleBars())
     end)
 
     local barsLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
@@ -1628,7 +1633,8 @@ local function CreateVitalFrame()
 
         check:SetChecked(IsBarEnabled(key))
         check:SetScript("OnClick", function(self)
-            SetBarEnabled(key, self:GetChecked() == true)
+            SetBarEnabled(key, not IsBarEnabled(key))
+            self:SetChecked(IsBarEnabled(key))
         end)
 
         settingsPanel.barChecks[key] = check
@@ -1650,7 +1656,9 @@ local function CreateVitalFrame()
             useClassColorCheck:SetEnabled(IsBarEnabled("xpFill"))
             settingsPanel.xpFillUseClassColorCheck = useClassColorCheck
             useClassColorCheck:SetScript("OnClick", function(self)
-                SetXPFillOption("useClassColor", self:GetChecked() == true)
+                SetXPFillOption("useClassColor",
+                                not GetXPFillOption("useClassColor"))
+                self:SetChecked(GetXPFillOption("useClassColor"))
                 if addonTable and addonTable.RefreshAllData then
                     addonTable.RefreshAllData()
                 end
@@ -1673,7 +1681,9 @@ local function CreateVitalFrame()
             hideWhenMaxLevelCheck:SetEnabled(IsBarEnabled("xpFill"))
             settingsPanel.xpFillHideWhenMaxLevelCheck = hideWhenMaxLevelCheck
             hideWhenMaxLevelCheck:SetScript("OnClick", function(self)
-                SetXPFillOption("hideWhenMaxLevel", self:GetChecked() == true)
+                SetXPFillOption("hideWhenMaxLevel",
+                                not GetXPFillOption("hideWhenMaxLevel"))
+                self:SetChecked(GetXPFillOption("hideWhenMaxLevel"))
                 if addonTable and addonTable.RefreshAllData then
                     addonTable.RefreshAllData()
                 end
@@ -1694,12 +1704,14 @@ local function CreateVitalFrame()
             xpRemainingCheck:SetChecked(IsBarEnabled("xpRemaining"))
             settingsPanel.barChecks.xpRemaining = xpRemainingCheck
             xpRemainingCheck:SetScript("OnClick", function(self)
-                SetBarEnabled("xpRemaining", self:GetChecked() == true)
+                SetBarEnabled("xpRemaining", not IsBarEnabled("xpRemaining"))
+                self:SetChecked(IsBarEnabled("xpRemaining"))
             end)
 
             check:SetScript("OnClick", function(self)
-                local enabled = self:GetChecked() == true
-                SetBarEnabled("xpFill", enabled)
+                SetBarEnabled("xpFill", not IsBarEnabled("xpFill"))
+                local enabled = IsBarEnabled("xpFill")
+                self:SetChecked(enabled)
                 useClassColorCheck:SetEnabled(enabled)
                 hideWhenMaxLevelCheck:SetEnabled(enabled)
             end)
@@ -1723,15 +1735,17 @@ local function CreateVitalFrame()
             autoSwitchCheck:SetEnabled(IsBarEnabled("reputation"))
             settingsPanel.reputationAutoSwitchCheck = autoSwitchCheck
             autoSwitchCheck:SetScript("OnClick", function(self)
-                SetReputationAutoSwitch(self:GetChecked() == true)
+                SetReputationAutoSwitch(not GetReputationAutoSwitch())
+                self:SetChecked(GetReputationAutoSwitch())
                 if addonTable and addonTable.RefreshAllData then
                     addonTable.RefreshAllData()
                 end
             end)
 
             check:SetScript("OnClick", function(self)
-                local enabled = self:GetChecked() == true
-                SetBarEnabled("reputation", enabled)
+                SetBarEnabled("reputation", not IsBarEnabled("reputation"))
+                local enabled = IsBarEnabled("reputation")
+                self:SetChecked(enabled)
                 autoSwitchCheck:SetEnabled(enabled)
             end)
 
@@ -1742,30 +1756,14 @@ local function CreateVitalFrame()
         end
     end
 
-    local craftingCheck = CreateFrame("CheckButton", nil, settingsPanel,
-                                      "UICheckButtonTemplate")
-    if prevCheck then
-        local craftX = alignAfterXpSubsets and -16 or 0
-        craftingCheck:SetPoint("TOPLEFT", prevCheck, "BOTTOMLEFT", craftX,
-                               checkGap)
-        alignAfterXpSubsets = false
-    else
-        craftingCheck:SetPoint("TOPLEFT", barsLabel, "BOTTOMLEFT", 10, -2)
-    end
-    local craftingLabel = craftingCheck:CreateFontString(nil, "OVERLAY",
-                                                         "GameFontHighlight")
-    craftingLabel:SetPoint("LEFT", craftingCheck, "RIGHT", 10, 1)
-    craftingLabel:SetText(L["Crafting Skills"])
-    craftingCheck:SetChecked(IsBarEnabled("crafting"))
-    craftingCheck:SetScript("OnClick", function(self)
-        SetBarEnabled("crafting", self:GetChecked() == true)
-    end)
-    settingsPanel.barChecks.crafting = craftingCheck
-    prevCheck = craftingCheck
-
     local optionsLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
                                                         "GameFontHighlightMedium")
-    optionsLabel:SetPoint("TOPLEFT", craftingCheck, "BOTTOMLEFT", -10, -8)
+    if prevCheck then
+        local optionsX = alignAfterXpSubsets and -26 or -10
+        optionsLabel:SetPoint("TOPLEFT", prevCheck, "BOTTOMLEFT", optionsX, -8)
+    else
+        optionsLabel:SetPoint("TOPLEFT", barsLabel, "BOTTOMLEFT", 0, -8)
+    end
     optionsLabel:SetJustifyH("LEFT")
     optionsLabel:SetText(L["Options"])
 
@@ -1784,7 +1782,8 @@ local function CreateVitalFrame()
     hideBlizzardWatchBarCheck:SetChecked(GetHideBlizzardWatchBar())
     settingsPanel.hideBlizzardWatchBarCheck = hideBlizzardWatchBarCheck
     hideBlizzardWatchBarCheck:SetScript("OnClick", function(self)
-        SetHideBlizzardWatchBar(self:GetChecked() == true)
+        SetHideBlizzardWatchBar(not GetHideBlizzardWatchBar())
+        self:SetChecked(GetHideBlizzardWatchBar())
         ApplyBlizzardWatchBarVisibility()
     end)
 
@@ -1799,7 +1798,8 @@ local function CreateVitalFrame()
     streamerModeCheck:SetChecked(GetStreamerMode())
     settingsPanel.streamerModeCheck = streamerModeCheck
     streamerModeCheck:SetScript("OnClick", function(self)
-        SetStreamerMode(self:GetChecked() == true)
+        SetStreamerMode(not GetStreamerMode())
+        self:SetChecked(GetStreamerMode())
         UpdateNameText()
     end)
 
@@ -1823,7 +1823,13 @@ local function CreateVitalFrame()
         settingsPanel.showSkillsFrameCheck = showSkillsFrameCheck
         showSkillsFrameCheck:SetScript("OnClick", function(self)
             if UI.SetSkillsFrameShown then
-                UI.SetSkillsFrameShown(self:GetChecked() == true)
+                local shown = true
+                if UI.GetSkillsFrameEnabled then
+                    shown = not UI.GetSkillsFrameEnabled()
+                end
+                UI.SetSkillsFrameShown(shown)
+                self:SetChecked(UI.GetSkillsFrameEnabled and
+                                    UI.GetSkillsFrameEnabled() or shown)
             end
         end)
     end
@@ -1882,6 +1888,81 @@ local function CreateVitalFrame()
         ResetToDefaults()
         UpdateSettingsPanelVisibility()
     end)
+end
+
+local function CreateVitalFrame()
+    if vitalFrameFrame then return end
+
+    local db = GetDB()
+    local frameSettings = db and db.profile and db.profile.frame
+    local frameWidth = ClampSizeValue(frameSettings and frameSettings.width,
+                                     FRAME_MIN_WIDTH, FRAME_MAX_WIDTH) or
+                           DEFAULT_FRAME_WIDTH
+    local frameHeight = ClampSizeValue(frameSettings and frameSettings.height,
+                                      FRAME_MIN_HEIGHT, FRAME_MAX_HEIGHT) or
+                            DEFAULT_FRAME_HEIGHT
+
+    local frame = CreateFrame("Frame", MAIN_FRAME_NAME, UIParent,
+                             "BackdropTemplate")
+    frame:SetSize(frameWidth, frameHeight)
+    frame:SetPoint("CENTER")
+    AllowClientFramePosition(frame)
+
+    frame:SetToplevel(true)
+    frame:SetMovable(true)
+    frame:EnableMouse(false)
+    frame:RegisterForDrag("LeftButton")
+    frame:SetClampedToScreen(true)
+    frame:SetFrameStrata("LOW")
+    frame:SetFrameLevel(1)
+    frame:SetAlpha(1)
+
+    frame:SetBackdrop({
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true,
+        tileSize = 16,
+        edgeSize = 16,
+        insets = {left = 4, right = 4, top = 4, bottom = 4}
+    })
+    frame:SetBackdropColor(0, 0, 0, 0.5)
+    frame:SetBackdropBorderColor(0.83, 0.66, 0.27, 1)
+
+    local selection = CreateFrame("Frame", nil, frame, "BackdropTemplate")
+    selection:SetAllPoints(frame)
+    selection:SetFrameLevel(frame:GetFrameLevel() + 10)
+    selection:EnableMouse(false)
+
+    selection.Background = selection:CreateTexture(nil, "BACKGROUND")
+    selection.Background:SetTexture(
+        "Interface/AddOns/VitalFrame/Art/EditModeHighlighted")
+    if selection.Background.SetTextureSliceMargins then
+        pcall(selection.Background.SetTextureSliceMargins,
+              selection.Background, 16, 16, 16, 16)
+    end
+    if selection.Background.SetTextureSliceMode then
+        pcall(selection.Background.SetTextureSliceMode, selection.Background, 0)
+    end
+    selection.Background:SetPoint("TOPLEFT", selection, "TOPLEFT", -8, 8)
+    selection.Background:SetPoint("BOTTOMRIGHT", selection, "BOTTOMRIGHT", 8, -8)
+    selection:Hide()
+
+    selection.EditHint = selection:CreateFontString(nil, "OVERLAY",
+                                                    "GameFontHighlightLarge")
+    selection.EditHint:SetPoint("CENTER", selection, "CENTER", 0, 0)
+    selection.EditHint:SetWidth(176)
+    selection.EditHint:SetJustifyH("CENTER")
+    selection.EditHint:SetWordWrap(false)
+
+    local hintFont = select(1, selection.EditHint:GetFont())
+    selection.EditHint:SetFont(hintFont or "Fonts\\FRIZQT__.TTF", 26, nil)
+    selection.EditHint:SetText(L["Click To Edit"])
+    selection.EditHint:SetTextColor(1, 1, 1, 1)
+    selection.EditHint:Hide()
+    frame.Selection = selection
+    AttachEditModeSnapAPI(frame)
+
+    vitalFrameSelection = selection
 
     frame:SetScript("OnDragStart", function(self)
         if IsEditModeOpen() then
@@ -2081,10 +2162,6 @@ local function CreateVitalFrame()
             bar.BgFill = restedFill
         end
 
-        if CRAFTING_BAR_KEYS[key] then
-            bar:SetClipsChildren(false)
-        end
-
         local labelText = bar:CreateFontString(nil, "OVERLAY",
                                                "GameFontHighlight")
         labelText:SetPoint("CENTER", bar, "CENTER", 0, 0)
@@ -2104,7 +2181,7 @@ local function CreateVitalFrame()
     vitalFrameFrame = frame
     UpdateProgressBarLayout()
 
-    if frameSettings and frameSettings.shown == false then
+    if frameSettings and not ReadFlag(frameSettings.shown, true) then
         SetVitalFrameShown(false)
     else
         SetVitalFrameShown(true)
@@ -2146,7 +2223,12 @@ function UI.GetMainFrameSize()
     return vitalFrameFrame:GetWidth(), vitalFrameFrame:GetHeight()
 end
 function UI.IsEditModeOpen() return IsEditModeOpen() end
-function UI.LockFrameToAddonPosition(frame) LockFrameToAddonPosition(frame) end
+function UI.AllowClientFramePosition(frame) AllowClientFramePosition(frame) end
+function UI.LockFrameToAddonPosition(frame) AllowClientFramePosition(frame) end
+function UI.SaveAllFramePositions()
+    SaveFramePosition()
+    if UI.SaveSkillsPosition then UI.SaveSkillsPosition() end
+end
 function UI.AttachEditModeSnapAPI(frame) AttachEditModeSnapAPI(frame) end
 function UI.CreateSizeSlider(name, parent) return CreateSizeSlider(name, parent) end
 function UI.GetFrameBorderColor()
@@ -2163,6 +2245,7 @@ function UI.SuppressNextFocusClear() suppressNextFocusClear = true end
 function UI.SetVitalFrameShown(shouldShow) SetVitalFrameShown(shouldShow) end
 function UI.CreateVitalFrame() CreateVitalFrame() end
 function UI.ApplySavedFrameLayout() ApplySavedFrameLayout() end
+function UI.ApplySavedSettings() ApplySavedSettings() end
 function UI.ScheduleApplySavedFrameLayout() ScheduleApplySavedFrameLayout() end
 function UI.UpdateEditModeDragState() UpdateEditModeDragState() end
 function UI.SetLayoutUnlocked(unlocked) SetLayoutUnlocked(unlocked) end
@@ -2185,3 +2268,5 @@ function UI.SetBarBackgroundPercent(barKey, percent)
 end
 function UI.SetLevelText(level) SetLevelText(level) end
 function UI.UpdateNameText() UpdateNameText() end
+
+CreateVitalFrame()

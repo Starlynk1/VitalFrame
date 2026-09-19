@@ -1,0 +1,6 @@
+PRIVATE_NOTES.md
+.cursor/
+.DS_Store
+Thumbs.db
+*.bak
+*.tmp

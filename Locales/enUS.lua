@@ -1,0 +1,67 @@
+local addonName, addonTable = ...
+local L = addonTable.L
+
+-- Addon / chat
+L["Vital Frame"] = "Vital Frame"
+L["Vital Frame Options"] = "Vital Frame Options"
+L["Loaded. Commands: /vitalframe (or /vf)."] =
+    "Loaded. Commands: /vitalframe (or /vf)."
+L["Loaded. Commands: /vitalframe (or /vf). Use /vf config to move and edit."] =
+    "Loaded. Commands: /vitalframe (or /vf). Use /vf config to move and edit."
+L["Use Edit Mode to configure Vital Frame."] =
+    "Use Edit Mode to configure Vital Frame."
+L["Layout unlocked. Drag the frame or use the options panel."] =
+    "Layout unlocked. Drag the frame or use the options panel."
+L["Layout locked."] = "Layout locked."
+L["UI module was not loaded. Check VitalFrame.toc order."] =
+    "UI module was not loaded. Check VitalFrame.toc order."
+L["Ace3 was not found. Install Ace3 to enable saved settings."] =
+    "Ace3 was not found. Install Ace3 to enable saved settings."
+L["AceDB-3.0 was not found. Install Ace3 to enable saved settings."] =
+    "AceDB-3.0 was not found. Install Ace3 to enable saved settings."
+L["Frame shown."] = "Frame shown."
+L["Frame hidden."] = "Frame hidden."
+L["Frame initialized."] = "Frame initialized."
+L["Vital Frame Enabled."] = "Vital Frame Enabled."
+L["Position reset to center."] = "Position reset to center."
+-- Settings
+L["Click To Edit"] = "Click To Edit"
+L["Width"] = "Width"
+L["Height"] = "Height"
+L["Auto Scale Bars"] = "Auto Scale Bars"
+L["Bars"] = "Bars"
+L["Options"] = "Options"
+L["XP"] = "XP"
+L["Pet XP"] = "Pet XP"
+L["XP Remaining"] = "XP Remaining"
+L["Reputation"] = "Reputation"
+L["Auto Switch to Last Earned"] = "Auto Switch to Last Earned"
+L["Crafting Skills"] = "Crafting Skills"
+L["Skills Frame"] = "Skills Frame"
+L["Skills Frame Options"] = "Skills Frame Options"
+L["Show Skills Frame"] = "Show Skills Frame"
+L["All Skills"] = "All Skills"
+L["Selected Skills"] = "Selected Skills"
+L["Weapon Skills"] = "Weapon Skills"
+L["All Known"] = "All Known"
+L["Equipped"] = "Equipped"
+L["Use Class Color"] = "Use Class Color"
+L["Hide When Max Level"] = "Hide When Max Level"
+L["Hide Default Watch Bar"] = "Hide Default Watch Bar"
+L["Streamer Mode"] = "Streamer Mode"
+L["Theme"] = "Theme"
+L["Auto"] = "Auto"
+L["Classic"] = "Classic"
+L["Forever"] = "Forever"
+L["Reset to Defaults"] = "Reset to Defaults"
+L["Character"] = "Character"
+
+-- Bar labels
+L["Max Level"] = "Max Level"
+L["Paragon"] = "Paragon"
+L["%d / %d (%d%%)"] = "%d / %d (%d%%)"
+L["%d Remaining"] = "%d Remaining"
+L["Renown (%d)"] = "Renown (%d)"
+L["%s\n%s -- %d / %d (%d%%)"] = "%s\n%s -- %d / %d (%d%%)"
+L["%s\n%d / %d (%d%%)"] = "%s\n%d / %d (%d%%)"
+L["%s (%d/%d)"] = "%s (%d/%d)"

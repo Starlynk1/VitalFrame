@@ -1,0 +1,12 @@
+{
+    "flavors": [
+        "retail",
+        "classic",
+        "vanilla"
+    ],
+    "diagnostics": {
+        "enable": [
+            "need-check-nil"
+        ]
+    }
+}

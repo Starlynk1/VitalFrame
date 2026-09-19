@@ -1,0 +1,7 @@
+package-as: VitalFrame
+
+ignore:
+  - PRIVATE_NOTES.md
+  - .cursor
+  - .wowluarc.json
+  - .gitignore

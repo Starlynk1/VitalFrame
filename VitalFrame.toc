@@ -1,0 +1,16 @@
+## Interface: 120100, 16001, 11508, 11509
+## Title: Vital Frame
+## Notes: Stream-friendly name, level, and progress bars
+## Author: Starlynk
+## Version: 1.0.0
+## SavedVariables: VitalFrameDB
+## OptionalDeps: Ace3
+## X-Category: UnitFrames
+## X-License: MIT
+## X-Website: https://github.com/Starlynk1/VitalFrame
+
+Locales/Locales.xml
+Compat.lua
+UI/UI.lua
+UI/SkillsFrame.lua
+VitalFrame.lua

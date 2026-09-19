@@ -1,0 +1,3 @@
+local addonName, addonTable = ...
+local L = addonTable.L
+if GetLocale() ~= "esMX" then return end

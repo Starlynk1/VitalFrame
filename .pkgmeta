@@ -1,5 +1,9 @@
 package-as: VitalFrame
 
+manual-changelog:
+  filename: CHANGELOG.current.md
+  markup-type: markdown
+
 ignore:
   - PRIVATE_NOTES.md
   - .cursor

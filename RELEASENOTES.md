@@ -1,4 +1,4 @@
-# Vital Frame 1.1.0
+# v1.1.0
 
 - Choose a font for the name, level, and bar text, and for skill bars.
 - Set a maximum size for the name and for bar text. The text still shrinks when the frame or bars get smaller.

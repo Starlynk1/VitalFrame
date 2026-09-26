@@ -14,7 +14,17 @@ local defaults = {
             y = 0,
             width = 200,
             height = 200,
-            shown = true
+            shown = true,
+            frameOpacity = 100,
+            contentOpacity = 100
+        },
+        fonts = {
+            name = "frizqt",
+            level = "frizqt",
+            bars = "frizqt",
+            nameSize = 24,
+            lastNamePercent = 50,
+            barSize = 12
         },
         bars = {
             enabled = {
@@ -40,9 +50,13 @@ local defaults = {
             barHeight = 16,
             growDirection = "down",
             shown = true,
-            mode = "all",
+            mode = "selected",
             weaponMode = "allKnown",
-            selected = {}
+            selected = {},
+            barFont = "frizqt",
+            barFontSize = 12,
+            frameOpacity = 100,
+            contentOpacity = 100
         }
     },
     global = {
@@ -1281,9 +1295,21 @@ local function ScanClassicSkills()
     local catalog = {}
     local visible = {}
     local settings = db and db.profile and db.profile.skillsFrame
-    local mode = settings and settings.mode or "all"
     local weaponMode = settings and settings.weaponMode or "allKnown"
+    if settings and type(settings.selected) ~= "table" then
+        settings.selected = {}
+    end
     local selected = settings and settings.selected or {}
+    local includeAll = settings and
+                           (settings.includeAllSkills or settings.mode ~= "selected")
+    local hasChoices = false
+    if not includeAll then
+        for _ in pairs(selected) do
+            hasChoices = true
+            break
+        end
+    end
+    local seededSelectable = false
     local equipped = nil
     if weaponMode == "equipped" then equipped = GetEquippedWeaponSkillNames() end
 
@@ -1292,6 +1318,9 @@ local function ScanClassicSkills()
         name = StripOneHandedPrefix(name)
         if not name or name == "" then return end
         if IsBlockedSkillName(name) then return end
+        if skillCategory ~= "stat" and IsWeaponSkillName(name) then
+            skillCategory = "weapon"
+        end
         if skillCategory == "weapon" and not IsWeaponSkillName(name) then
             return
         end
@@ -1313,9 +1342,15 @@ local function ScanClassicSkills()
         catalog[#catalog + 1] = entry
         local include = true
         local nameKey = type(name) == "string" and name or nil
-        if mode == "selected" and nameKey and
-            not Compat.ReadFlag(selected[nameKey], false) then
-            include = false
+        local selectable = skillCategory == "profession" or
+                               skillCategory == "secondary"
+        if selectable and nameKey then
+            if includeAll or not hasChoices then
+                selected[nameKey] = 1
+                seededSelectable = true
+            elseif not Compat.ReadFlag(selected[nameKey], false) then
+                include = false
+            end
         end
         if include and skillCategory == "weapon" and equipped and nameKey then
             include = Compat.ReadFlag(equipped[CanonicalWeaponSkillName(nameKey)],
@@ -1501,6 +1536,10 @@ local function ScanClassicSkills()
 
     SortSkillList(catalog)
     SortSkillList(visible)
+    if settings and (seededSelectable or hasChoices) then
+        settings.mode = "selected"
+        settings.includeAllSkills = nil
+    end
     return visible, catalog
 end
 

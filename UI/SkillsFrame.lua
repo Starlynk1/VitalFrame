@@ -75,7 +75,10 @@ local function GetSkillsSettings()
     end
     if settings.growDirection ~= "up" then settings.growDirection = "down" end
     if settings.shown == nil then settings.shown = 1 end
-    if settings.mode ~= "selected" then settings.mode = "all" end
+    if settings.mode ~= "selected" then
+        settings.includeAllSkills = true
+        settings.mode = "selected"
+    end
     if settings.weaponMode ~= "equipped" then settings.weaponMode = "allKnown" end
     if type(settings.selected) ~= "table" then settings.selected = {} end
     return settings
@@ -444,10 +447,11 @@ local function AcquireSkillBar(index)
     bg:SetColorTexture(0.18, 0.18, 0.18, 0.35)
     bar.Background = bg
 
-    local label = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    local label = bar:CreateFontString(nil, "OVERLAY")
     label:SetPoint("CENTER", bar, "CENTER", 0, 0)
     label:SetJustifyH("CENTER")
     label:SetWordWrap(false)
+    label:SetFont("Fonts\\FRIZQT__.TTF", 12, "")
     label:SetText("")
     bar.LabelText = label
 
@@ -463,6 +467,52 @@ local function AcquireSkillBar(index)
 
     skillsBars[index] = bar
     return bar
+end
+
+local function ClampSkillsPercent(value)
+    local n = tonumber(value)
+    if not n then return 100 end
+    if n < 0 then n = 0 end
+    if n > 100 then n = 100 end
+    return math.floor(n + 0.5)
+end
+
+local function GetSkillsPercent(key)
+    local settings = GetSkillsSettings()
+    return ClampSkillsPercent(settings and settings[key])
+end
+
+local function GetSkillsBarFont()
+    local settings = GetSkillsSettings()
+    local id = settings and settings.barFont
+    if UI.IsFontChoice and UI.IsFontChoice(id) then return id end
+    return "frizqt"
+end
+
+local function GetSkillsBarFontSize()
+    local settings = GetSkillsSettings()
+    local size = math.floor((tonumber(settings and settings.barFontSize) or 12) +
+                                0.5)
+    if size < 8 then size = 8 end
+    if size > 16 then size = 16 end
+    return size
+end
+
+local function SetSkillsBarFontSize(size)
+    local settings = GetSkillsSettings()
+    size = math.floor((tonumber(size) or 12) + 0.5)
+    if size < 8 then size = 8 end
+    if size > 16 then size = 16 end
+    if settings then settings.barFontSize = size end
+    LayoutSkillBars()
+end
+
+local function ApplySkillsChrome()
+    if not skillsFrame or not skillsFrame.SetBackdropBorderColor then return end
+    local opacity = GetSkillsPercent("frameOpacity") / 100
+    skillsFrame:SetBackdropColor(0, 0, 0, 0.5 * opacity)
+    local r, g, b, a = GetSharedFrameBorderColor()
+    skillsFrame:SetBackdropBorderColor(r, g, b, (a or 1) * opacity)
 end
 
 function LayoutSkillBars()
@@ -552,13 +602,25 @@ function LayoutSkillBars()
             end
         end
         if bar.LabelText then
-            local fontPath, _, flags = bar.LabelText:GetFont()
-            local fontSize = math.max(8, math.min(12, barHeight - 1))
-            bar.LabelText:SetFont(fontPath or "Fonts\\FRIZQT__.TTF", fontSize,
-                                  flags)
+            local fontSize = GetSkillsBarFontSize()
+            if UI.FitBarLabelSize then
+                fontSize = UI.FitBarLabelSize(fontSize, barHeight, 1)
+            end
+            local fontFile = "Fonts\\FRIZQT__.TTF"
+            if UI.GetFontFileById then
+                fontFile = UI.GetFontFileById(GetSkillsBarFont())
+            end
+            bar.LabelText:SetFont(fontFile, fontSize, "")
+            if bar.LabelText.SetShadowOffset then
+                bar.LabelText:SetShadowOffset(0, 0)
+            end
+            if bar.LabelText.SetShadowColor then
+                bar.LabelText:SetShadowColor(0, 0, 0, 0)
+            end
             bar.LabelText:SetText(FormatSkillBarLabel(skill.name, skill.rank,
                                                       skill.maxRank))
         end
+        bar:SetAlpha(GetSkillsPercent("contentOpacity") / 100)
         bar:Show()
         previousBar = bar
     end
@@ -618,47 +680,85 @@ local function UpdateSkillSelectList()
     if not child then return end
     local checks = child.Checks or {}
     child.Checks = checks
+    local headings = child.Headings or {}
+    child.Headings = headings
 
     local settings = GetSkillsSettings()
     local selected = settings and settings.selected or {}
-    local modeIsSelected = settings and settings.mode == "selected"
+    local sections = {
+        {key = "profession", title = L["Primary Skills"]},
+        {key = "secondary", title = L["Secondary Skills"]}
+    }
+    local grouped = {profession = {}, secondary = {}}
+    for _, skill in ipairs(knownSkills) do
+        if grouped[skill.category] then
+            grouped[skill.category][#grouped[skill.category] + 1] = skill
+        end
+    end
+
     local y = 0
     local used = {}
+    local checkIndex = 0
+    for _, heading in pairs(headings) do heading:Hide() end
 
-    for index, skill in ipairs(knownSkills) do
-        local check = checks[index]
-        if not check then
-            check = CreateFrame("CheckButton", nil, child,
-                                "UICheckButtonTemplate")
-            check:SetSize(24, 24)
-            local label = check:CreateFontString(nil, "OVERLAY",
-                                                 "GameFontHighlightSmall")
-            label:SetPoint("LEFT", check, "RIGHT", 4, 1)
-            label:SetJustifyH("LEFT")
-            check.Label = label
-            checks[index] = check
-        end
-        check:ClearAllPoints()
-        check:SetPoint("TOPLEFT", child, "TOPLEFT", 0, -y)
-        check.Label:SetText(DisplaySkillName(skill.name))
-        check:SetChecked(ReadFlag(selected[skill.name], false))
-        check:SetEnabled(modeIsSelected)
-        if check.SetAlpha then check:SetAlpha(modeIsSelected and 1 or 0.55) end
-        check:SetScript("OnClick", function(self)
-            local current = GetSkillsSettings()
-            if not current then return end
-            current.selected = current.selected or {}
-            current.selected[skill.name] = WriteFlag(not ReadFlag(
-                                                         current.selected[skill.name],
-                                                         false))
-            self:SetChecked(ReadFlag(current.selected[skill.name], false))
-            if addonTable.RefreshSkillsData then
-                addonTable.RefreshSkillsData()
+    for _, section in ipairs(sections) do
+        local skills = grouped[section.key]
+        if #skills > 0 then
+            local heading = headings[section.key]
+            if not heading then
+                heading = child:CreateFontString(nil, "OVERLAY",
+                                                 "GameFontHighlightMedium")
+                heading:SetJustifyH("LEFT")
+                headings[section.key] = heading
             end
-        end)
-        check:Show()
-        used[index] = true
-        y = y + 22
+            heading:ClearAllPoints()
+            heading:SetPoint("TOPLEFT", child, "TOPLEFT", 0, -y)
+            heading:SetFontObject("GameFontHighlightMedium")
+            heading:SetText(section.title)
+            if heading.SetAlpha then heading:SetAlpha(1) end
+            heading:Show()
+            y = y + 20
+
+            for _, skill in ipairs(skills) do
+                checkIndex = checkIndex + 1
+                local check = checks[checkIndex]
+                if not check then
+                    check = CreateFrame("CheckButton", nil, child,
+                                        "UICheckButtonTemplate")
+                    check:SetSize(24, 24)
+                    local label = check:CreateFontString(nil, "OVERLAY",
+                                                         "GameFontHighlight")
+                    label:SetPoint("LEFT", check, "RIGHT", 10, 1)
+                    label:SetJustifyH("LEFT")
+                    check.Label = label
+                    checks[checkIndex] = check
+                end
+                check:ClearAllPoints()
+                check:SetPoint("TOPLEFT", child, "TOPLEFT", 4, -y)
+                check.Label:SetFontObject("GameFontHighlight")
+                check.Label:SetText(DisplaySkillName(skill.name))
+                check:SetChecked(ReadFlag(selected[skill.name], false))
+                check:SetEnabled(true)
+                if check.SetAlpha then check:SetAlpha(1) end
+                check:SetScript("OnClick", function(self)
+                    local current = GetSkillsSettings()
+                    if not current then return end
+                    current.selected = current.selected or {}
+                    current.selected[skill.name] = WriteFlag(not ReadFlag(
+                                                                 current.selected[skill.name],
+                                                                 false))
+                    self:SetChecked(ReadFlag(current.selected[skill.name],
+                                             false))
+                    if addonTable.RefreshSkillsData then
+                        addonTable.RefreshSkillsData()
+                    end
+                end)
+                check:Show()
+                used[checkIndex] = true
+                y = y + 22
+            end
+            y = y + 6
+        end
     end
 
     for index, check in pairs(checks) do
@@ -666,11 +766,11 @@ local function UpdateSkillSelectList()
     end
 
     child:SetHeight(math.max(y, 1))
-    child:SetWidth(260)
+    child:SetWidth(170)
     local scroll = skillsSettingsWidgets.SkillSelectScroll
     if scroll then
-        scroll:EnableMouseWheel(modeIsSelected)
-        if scroll.SetAlpha then scroll:SetAlpha(modeIsSelected and 1 or 0.55) end
+        scroll:EnableMouseWheel(true)
+        if scroll.SetAlpha then scroll:SetAlpha(1) end
     end
 end
 
@@ -687,12 +787,6 @@ local function RefreshSkillsSettings()
 
     if skillsSettingsWidgets.ShowCheck then
         skillsSettingsWidgets.ShowCheck:SetChecked(ReadFlag(settings.shown, true))
-    end
-    if skillsSettingsWidgets.AllSkillsCheck then
-        skillsSettingsWidgets.AllSkillsCheck:SetChecked(settings.mode ~= "selected")
-    end
-    if skillsSettingsWidgets.SelectedSkillsCheck then
-        skillsSettingsWidgets.SelectedSkillsCheck:SetChecked(settings.mode == "selected")
     end
     if skillsSettingsWidgets.WeaponAllCheck then
         skillsSettingsWidgets.WeaponAllCheck:SetChecked(settings.weaponMode ~= "equipped")
@@ -721,24 +815,19 @@ local function RefreshSkillsSettings()
     if skillsSettingsWidgets.BarHeightValue then
         skillsSettingsWidgets.BarHeightValue:SetText(tostring(barHeight))
     end
+    if skillsSettingsWidgets.BarFontButton then
+        skillsSettingsWidgets.BarFontButton.Refresh()
+    end
+    if skillsSettingsWidgets.BarFontSizeButton then
+        skillsSettingsWidgets.BarFontSizeButton.Refresh()
+    end
+    if skillsSettingsWidgets.FrameOpacitySlider then
+        skillsSettingsWidgets.FrameOpacitySlider.Refresh()
+    end
+    if skillsSettingsWidgets.ContentOpacitySlider then
+        skillsSettingsWidgets.ContentOpacitySlider.Refresh()
+    end
     UpdateSkillSelectList()
-end
-
-local function SeedSelectedSkills()
-    local settings = GetSkillsSettings()
-    if not settings then return end
-    settings.selected = settings.selected or {}
-    local hasAny = false
-    for _, enabled in pairs(settings.selected) do
-        if ReadFlag(enabled, false) then
-            hasAny = true
-            break
-        end
-    end
-    if hasAny then return end
-    for _, skill in ipairs(knownSkills) do
-        settings.selected[skill.name] = 1
-    end
 end
 
 local function BeginSkillsDrag(frame)
@@ -829,7 +918,7 @@ local function CreateSkillsSettingsPanel()
     if not SupportsClassicSkills() or skillsSettingsBuilt then return end
 
     local settingsPanel = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
-    settingsPanel:SetSize(360, 600)
+    settingsPanel:SetSize(480, 500)
     settingsPanel:SetFrameStrata("DIALOG")
     settingsPanel:SetFrameLevel((skillsFrame and skillsFrame:GetFrameLevel() or
                                     1) + 20)
@@ -891,39 +980,17 @@ local function CreateSkillsSettingsPanel()
         if UI.SetLayoutFocus then UI.SetLayoutFocus(nil) end
     end)
 
-    local checkGap = -2
-    local allCheck = CreateFrame("CheckButton", nil, settingsPanel,
-                                 "UICheckButtonTemplate")
-    allCheck:SetPoint("TOPLEFT", settingsPanel, "TOPLEFT", 20, -42)
-    local allLabel = allCheck:CreateFontString(nil, "OVERLAY",
-                                               "GameFontHighlight")
-    allLabel:SetPoint("LEFT", allCheck, "RIGHT", 10, 1)
-    allLabel:SetText(L["All Skills"])
-    allCheck:SetScript("OnClick", function()
-        local settings = GetSkillsSettings()
-        if settings then settings.mode = "all" end
-        if addonTable.RefreshSkillsData then addonTable.RefreshSkillsData() end
-        RefreshSkillsSettings()
-    end)
+    local leftColumn = CreateFrame("Frame", nil, settingsPanel)
+    leftColumn:SetSize(1, 1)
+    leftColumn:SetPoint("TOPLEFT", settingsPanel, "TOPLEFT", 18, -42)
+    local rightColumn = CreateFrame("Frame", nil, settingsPanel)
+    rightColumn:SetSize(1, 1)
+    rightColumn:SetPoint("TOPLEFT", leftColumn, "TOPRIGHT", 180, 0)
 
-    local selectedCheck = CreateFrame("CheckButton", nil, settingsPanel,
-                                      "UICheckButtonTemplate")
-    selectedCheck:SetPoint("TOPLEFT", allCheck, "BOTTOMLEFT", 0, checkGap)
-    local selectedLabel = selectedCheck:CreateFontString(nil, "OVERLAY",
-                                                         "GameFontHighlight")
-    selectedLabel:SetPoint("LEFT", selectedCheck, "RIGHT", 10, 1)
-    selectedLabel:SetText(L["Selected Skills"])
-    selectedCheck:SetScript("OnClick", function()
-        SeedSelectedSkills()
-        local settings = GetSkillsSettings()
-        if settings then settings.mode = "selected" end
-        if addonTable.RefreshSkillsData then addonTable.RefreshSkillsData() end
-        RefreshSkillsSettings()
-    end)
+    local checkGap = -2
 
     local selectScroll = CreateFrame("ScrollFrame", nil, settingsPanel)
-    selectScroll:SetSize(284, 140)
-    selectScroll:SetPoint("TOPLEFT", selectedCheck, "BOTTOMLEFT", 16, -2)
+    selectScroll:SetSize(170, 220)
     selectScroll:EnableMouseWheel(true)
     local selectChild = CreateFrame("Frame", nil, selectScroll)
     selectChild:SetSize(260, 1)
@@ -939,7 +1006,7 @@ local function CreateSkillsSettingsPanel()
 
     local weaponLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
                                                        "GameFontHighlightMedium")
-    weaponLabel:SetPoint("TOPLEFT", selectScroll, "BOTTOMLEFT", -16, -10)
+    weaponLabel:SetPoint("TOPLEFT", leftColumn, "TOPLEFT", 0, 0)
     weaponLabel:SetText(L["Weapon Skills"])
 
     local weaponAllCheck = CreateFrame("CheckButton", nil, settingsPanel,
@@ -972,9 +1039,11 @@ local function CreateSkillsSettingsPanel()
         RefreshSkillsSettings()
     end)
 
+    selectScroll:SetPoint("TOPLEFT", weaponEquippedCheck, "BOTTOMLEFT", 0, -8)
+
     local widthLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
                                                       "GameFontHighlightMedium")
-    widthLabel:SetPoint("TOPLEFT", weaponEquippedCheck, "BOTTOMLEFT", 0, -10)
+    widthLabel:SetPoint("TOPLEFT", rightColumn, "TOPLEFT", 0, 0)
     widthLabel:SetText(L["Width"])
 
     local widthControl, widthSlider
@@ -1067,6 +1136,103 @@ local function CreateSkillsSettingsPanel()
         RefreshSkillsSettings()
     end)
 
+    local fontsLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                      "GameFontHighlightMedium")
+    fontsLabel:SetPoint("TOPLEFT", growUpCheck, "BOTTOMLEFT", -10, -12)
+    fontsLabel:SetJustifyH("LEFT")
+    fontsLabel:SetText(L["Fonts"])
+
+    local barsFontLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                         "GameFontHighlight")
+    barsFontLabel:SetPoint("TOPLEFT", fontsLabel, "BOTTOMLEFT", 10, -10)
+    barsFontLabel:SetJustifyH("LEFT")
+    barsFontLabel:SetText(L["Bars"])
+    skillsSettingsWidgets.BarFontButton = UI.CreateFontDropdown(settingsPanel,
+                                                                barsFontLabel,
+                                                                GetSkillsBarFont,
+                                                                function(id)
+        local settings = GetSkillsSettings()
+        if settings then settings.barFont = id end
+        LayoutSkillBars()
+    end, 176, true)
+    if UI.CreateFontSizeDropdown then
+        skillsSettingsWidgets.BarFontSizeButton = UI.CreateFontSizeDropdown(
+                                                      settingsPanel,
+                                                      skillsSettingsWidgets.BarFontButton,
+                                                      8, 16, GetSkillsBarFontSize,
+                                                      SetSkillsBarFontSize)
+    end
+    if skillsSettingsWidgets.BarFontSizeButton then
+        local barsSizeLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                             "GameFontHighlight")
+        barsSizeLabel:SetPoint("BOTTOMLEFT",
+                               skillsSettingsWidgets.BarFontSizeButton,
+                               "TOPLEFT", 0, 2)
+        barsSizeLabel:SetJustifyH("LEFT")
+        barsSizeLabel:SetText(L["Size"])
+    end
+
+    local opacityLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                        "GameFontHighlightMedium")
+    opacityLabel:SetPoint("TOPLEFT", settingsPanel, "TOPLEFT", 18, -420)
+    opacityLabel:SetJustifyH("LEFT")
+    opacityLabel:SetText(L["Opacity"])
+
+    local frameOpacityLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                             "GameFontHighlight")
+    frameOpacityLabel:SetPoint("TOPLEFT", opacityLabel, "BOTTOMLEFT", 0, -8)
+    frameOpacityLabel:SetJustifyH("LEFT")
+    frameOpacityLabel:SetText(L["Frame Opacity"])
+    skillsSettingsWidgets.FrameOpacitySlider = UI.CreatePercentSlider(
+                                                   "VitalFrameSkillsFrameOpacitySlider",
+                                                   settingsPanel,
+                                                   frameOpacityLabel,
+                                                   function()
+        return GetSkillsPercent("frameOpacity")
+    end, function(percent)
+        local settings = GetSkillsSettings()
+        if settings then settings.frameOpacity = percent end
+        ApplySkillsChrome()
+    end, 140)
+
+    local contentOpacityLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                               "GameFontHighlight")
+    contentOpacityLabel:SetPoint("TOPLEFT", frameOpacityLabel, "TOPLEFT", 210, 0)
+    contentOpacityLabel:SetJustifyH("LEFT")
+    contentOpacityLabel:SetText(L["Content Opacity"])
+    skillsSettingsWidgets.ContentOpacitySlider = UI.CreatePercentSlider(
+                                                     "VitalFrameSkillsContentOpacitySlider",
+                                                     settingsPanel,
+                                                     contentOpacityLabel,
+                                                     function()
+        return GetSkillsPercent("contentOpacity")
+    end, function(percent)
+        local settings = GetSkillsSettings()
+        if settings then settings.contentOpacity = percent end
+        LayoutSkillBars()
+    end, 140)
+
+    local function PlaceSkillsOpacity()
+        local top = settingsPanel:GetTop()
+        local leftBottom = selectScroll and selectScroll:GetBottom()
+        local rightBottom = skillsSettingsWidgets.BarFontButton and
+                                skillsSettingsWidgets.BarFontButton:GetBottom()
+        if not top or not leftBottom or not rightBottom then return end
+        local lowest = math.min(leftBottom, rightBottom)
+        opacityLabel:ClearAllPoints()
+        opacityLabel:SetPoint("TOPLEFT", settingsPanel, "TOPLEFT", 18,
+                              -(top - lowest) - 18)
+        local needed = (top - lowest) + 18 + 120
+        settingsPanel:SetHeight(math.ceil(needed))
+    end
+    settingsPanel:HookScript("OnShow", function()
+        if Compat and Compat.After then
+            Compat.After(0, PlaceSkillsOpacity)
+        else
+            PlaceSkillsOpacity()
+        end
+    end)
+
     local resetButton = CreateFrame("Button", nil, settingsPanel,
                                     "UIPanelButtonTemplate")
     resetButton:SetSize(200, 22)
@@ -1077,8 +1243,6 @@ local function CreateSkillsSettingsPanel()
     end)
 
     skillsSettingsPanel = settingsPanel
-    skillsSettingsWidgets.AllSkillsCheck = allCheck
-    skillsSettingsWidgets.SelectedSkillsCheck = selectedCheck
     skillsSettingsWidgets.WeaponAllCheck = weaponAllCheck
     skillsSettingsWidgets.WeaponEquippedCheck = weaponEquippedCheck
     skillsSettingsWidgets.GrowDownCheck = growDownCheck
@@ -1165,6 +1329,7 @@ function UI.CreateSkillsFrame()
     if UI.AttachEditModeSnapAPI then UI.AttachEditModeSnapAPI(frame) end
 
     skillsFrame = frame
+    ApplySkillsChrome()
     skillsSelection = selection
 
     frame:SetScript("OnDragStart", function(self)
@@ -1257,10 +1422,15 @@ function UI.ResetSkillsFrame()
         settings.width = width
         settings.barHeight = DEFAULT_SKILLS_BAR_HEIGHT
         settings.growDirection = "down"
-        settings.mode = "all"
+        settings.mode = "selected"
+        settings.includeAllSkills = nil
         settings.weaponMode = "allKnown"
         settings.selected = {}
         settings.shown = 1
+        settings.barFont = "frizqt"
+        settings.barFontSize = 12
+        settings.frameOpacity = 100
+        settings.contentOpacity = 100
     end
     skillsFrame:ClearAllPoints()
     skillsFrame:SetPoint("CENTER", UIParent, "CENTER", 180, 0)
@@ -1345,9 +1515,7 @@ function UI.SetSkillsFrameShown(shouldShow)
 end
 
 function UI.ApplySkillsFrameTheme()
-    if not skillsFrame or not skillsFrame.SetBackdropBorderColor then return end
-    local r, g, b, a = GetSharedFrameBorderColor()
-    skillsFrame:SetBackdropBorderColor(r, g, b, a)
+    ApplySkillsChrome()
     LayoutSkillBars()
 end
 

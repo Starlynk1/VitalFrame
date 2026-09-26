@@ -5,3 +5,5 @@
 - Set the last name as a percentage of the first name size.
 - Fade each frame's border and background separately from the text and bars inside it.
 - List weapon skills above professions, and choose primary and secondary skills on their own.
+- Raise the minimum Vital Frame height so the name and level have room.
+- Show the Forever surname as the last name.

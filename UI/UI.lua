@@ -25,7 +25,9 @@ local function IsRetailClient()
 end
 
 local function SupportsPetXpLeveling()
-    if Compat.SupportsPetXpLeveling then return Compat.SupportsPetXpLeveling() end
+    if Compat.SupportsPetXpLeveling then
+        return Compat.SupportsPetXpLeveling()
+    end
     return not IsRetailClient()
 end
 
@@ -52,16 +54,12 @@ local BAR_DEFS = {
 local FIXED_BAR_HEIGHT = 30
 local PET_BAR_HEIGHT = math.floor(FIXED_BAR_HEIGHT * 2 / 3)
 local XP_BAR_HEIGHT = math.floor((FIXED_BAR_HEIGHT + PET_BAR_HEIGHT) / 2)
-local XP_BAR_KEYS = {
-    xpFill = true,
-    xpRemaining = true,
-    reputation = true
-}
+local XP_BAR_KEYS = {xpFill = true, xpRemaining = true, reputation = true}
 
 local DEFAULT_FRAME_WIDTH = 200
 local DEFAULT_FRAME_HEIGHT = 200
 local FRAME_MIN_WIDTH, FRAME_MAX_WIDTH = 200, 600
-local FRAME_MIN_HEIGHT, FRAME_MAX_HEIGHT = 100, 300
+local FRAME_MIN_HEIGHT, FRAME_MAX_HEIGHT = 130, 300
 local MIN_FIT_BAR_HEIGHT = 4
 local LEVEL_MIN_FONT_SIZE = 10
 
@@ -75,21 +73,22 @@ local LEVEL_BASE_FONT_SIZE = 60
 local LEVEL_TEXT_VERTICAL_PADDING = 5
 local NAME_FIRST_FONT_SIZE = 24
 local NAME_LAST_FONT_SIZE = 12
+local NAME_ICON_SIZE = 22
+local NAME_MIN_FONT_SIZE = 8
+-- Level text stays this many points larger than the name and icon.
+-- Change this value and /reload to tune it.
+local LEVEL_NAME_POINT_GAP = 4
 local NAME_ICON_GAP = 8
 local NAME_FRAME_INSET = 8
 local BAR_REGION_COLOR = {0, 0, 0, 0.68}
 local BAR_TRACK_COLOR = {0.18, 0.18, 0.18, 0.35}
 local BAR_DIVIDER_COLOR = {1, 1, 1, 0.32}
 local BAR_DIVIDER_HEIGHT = 1
-local THEME_COLORS = {
-    classic = {1, 1, 1, 1},
-    forever = {0.83, 0.66, 0.27, 1}
-}
+local THEME_COLORS = {classic = {1, 1, 1, 1}, forever = {0.83, 0.66, 0.27, 1}}
 
 local UpdateProgressBarLayout
 local UpdateEditModeDragState
 local CreateVitalFrameSettings
-local levelLayoutRetryPending = false
 
 local function GetDB()
     if addonTable and addonTable.GetDB then return addonTable.GetDB() end
@@ -146,13 +145,58 @@ local function RefreshThemeChecks()
     end
 end
 
+local function ClampPercent(value)
+    local n = tonumber(value)
+    if not n then return 100 end
+    if n < 0 then n = 0 end
+    if n > 100 then n = 100 end
+    return math.floor(n + 0.5)
+end
+
+local function GetFramePercent(key)
+    local db = GetDB()
+    local frame = db and db.profile and db.profile.frame
+    return ClampPercent(frame and frame[key])
+end
+
+local function ApplyMainContentOpacity()
+    if not vitalFrameFrame then return end
+    local alpha = GetFramePercent("contentOpacity") / 100
+    local frame = vitalFrameFrame
+    if frame.NameText then frame.NameText:SetAlpha(alpha) end
+    if frame.LastNameText then frame.LastNameText:SetAlpha(alpha) end
+    if frame.LevelText then frame.LevelText:SetAlpha(alpha) end
+    if frame.ClassIcon then frame.ClassIcon:SetAlpha(alpha) end
+    if frame.ClassIconBorder then frame.ClassIconBorder:SetAlpha(alpha) end
+    if frame.BarRegion then frame.BarRegion:SetAlpha(alpha) end
+    if frame.ProgressBarsByKey then
+        for _, bar in pairs(frame.ProgressBarsByKey) do
+            if bar.SetAlpha then bar:SetAlpha(alpha) end
+        end
+    end
+end
+
 local function ApplyFrameTheme()
     local r, g, b, a = GetResolvedThemeColor()
     if vitalFrameFrame and vitalFrameFrame.SetBackdropBorderColor then
-        vitalFrameFrame:SetBackdropBorderColor(r, g, b, a)
+        local opacity = GetFramePercent("frameOpacity") / 100
+        vitalFrameFrame:SetBackdropColor(0, 0, 0, 0.5 * opacity)
+        vitalFrameFrame:SetBackdropBorderColor(r, g, b, (a or 1) * opacity)
     end
     if UI.ApplySkillsFrameTheme then UI.ApplySkillsFrameTheme() end
     RefreshThemeChecks()
+end
+
+local function SetFramePercent(key, percent)
+    local db = GetDB()
+    if not db or not db.profile then return end
+    db.profile.frame = db.profile.frame or {}
+    db.profile.frame[key] = ClampPercent(percent)
+    if key == "contentOpacity" then
+        ApplyMainContentOpacity()
+    else
+        ApplyFrameTheme()
+    end
 end
 
 local function SetTheme(theme)
@@ -273,12 +317,36 @@ local targetShowsPlayer = false
 local focusShowsPlayer = false
 local applyingUnitName = false
 local cachedDisplayName
+local cachedFirstName
+local cachedLastName
+
+local function NameIsPresent(value)
+    local ok, missing = pcall(function() return value == nil end)
+    if not ok then return true end
+    return not missing
+end
 
 local function RefreshCachedDisplayName()
+    -- Forever UnitName returns the surname as the second value. It is not
+    -- part of the first string, and comparing either value can throw.
     if GetStreamerMode() then
-        cachedDisplayName = UnitClass("player") or L["Character"]
+        local ok, className = pcall(UnitClass, "player")
+        if not ok or not NameIsPresent(className) then return end
+        cachedDisplayName = className
+        cachedFirstName = className
+        cachedLastName = nil
+        return
+    end
+
+    local ok, name, surname = pcall(UnitName, "player")
+    if not ok or not NameIsPresent(name) then return end
+    cachedDisplayName = name
+    cachedFirstName = name
+    if Compat.IsForeverClient and Compat.IsForeverClient() and
+        NameIsPresent(surname) then
+        cachedLastName = surname
     else
-        cachedDisplayName = UnitName("player") or L["Character"]
+        cachedLastName = nil
     end
 end
 
@@ -301,50 +369,213 @@ local function GetNameMaxWidth()
                            DEFAULT_FRAME_HEIGHT
     local iconWidth = vitalFrameFrame and vitalFrameFrame.ClassIcon and
                           vitalFrameFrame.ClassIcon:GetWidth() or 22
-    local maxWidth = math.floor(frameWidth - (NAME_FRAME_INSET * 2) - iconWidth -
-                                    NAME_ICON_GAP)
+    local maxWidth = math.floor(
+                         frameWidth - (NAME_FRAME_INSET * 2) - iconWidth -
+                             NAME_ICON_GAP)
     if maxWidth < 40 then maxWidth = 40 end
     return maxWidth
 end
 
 local function SplitDisplayName(name)
     name = name or ""
-    local space = string.find(name, " ", 1, true)
-    if not space then return name, nil end
-    local firstName = string.sub(name, 1, space - 1)
-    local lastName = string.sub(name, space + 1)
-    if lastName == "" then return firstName, nil end
+    local ok, space = pcall(string.find, name, " ", 1, true)
+    if not ok or type(space) ~= "number" then return name, nil end
+    local firstName, lastName
+    ok, firstName = pcall(string.sub, name, 1, space - 1)
+    if not ok or not firstName or firstName == "" then return name, nil end
+    ok, lastName = pcall(string.sub, name, space + 1)
+    if not ok or not lastName or lastName == "" then return firstName, nil end
     return firstName, lastName
 end
 
-local function ApplyNameFont(fontString, size)
+local FONT_CANDIDATES = {
+    {id = "frizqt", label = "Friz Quadrata", file = "Fonts\\FRIZQT__.TTF"},
+    {id = "arialn", label = "Arial Narrow", file = "Fonts\\ARIALN.TTF"},
+    {id = "morpheus", label = "Morpheus", file = "Fonts\\MORPHEUS.TTF"},
+    {id = "skurri", label = "Skurri", file = "Fonts\\SKURRI.TTF"},
+    {id = "2002", label = "2002", file = "Fonts\\2002.TTF"},
+    {id = "arhei", label = "AR Hei", file = "Fonts\\ARHei.ttf"},
+    {id = "arkai", label = "AR Kai", file = "Fonts\\ARKai_T.ttf"},
+    {id = "bhei", label = "bHEI", file = "Fonts\\bHEI00M.TTF"},
+    {id = "bheibold", label = "bHEI Bold", file = "Fonts\\bHEI01B.TTF"},
+    {id = "bkai", label = "bKAI", file = "Fonts\\bKAI00M.TTF"},
+    {id = "blei", label = "bLEI", file = "Fonts\\blei00d.TTF"},
+    {id = "damage", label = "Damage", file = "Fonts\\K_Damage.TTF"},
+    {id = "pagetext", label = "Page Text", file = "Fonts\\K_Pagetext.TTF"}
+}
+
+local fontProbe
+local function FontFileAvailable(path)
+    if not fontProbe then fontProbe = CreateFont("VitalFrameFontProbe") end
+    local ok, result = pcall(fontProbe.SetFont, fontProbe, path, 12, "")
+    return ok and result ~= false
+end
+
+local FONT_OPTIONS = {}
+local FONT_BY_ID = {}
+for _, fontOption in ipairs(FONT_CANDIDATES) do
+    if FontFileAvailable(fontOption.file) then
+        FONT_OPTIONS[#FONT_OPTIONS + 1] = fontOption
+        FONT_BY_ID[fontOption.id] = fontOption
+    end
+end
+if not FONT_BY_ID.frizqt then
+    local fallback = FONT_CANDIDATES[1]
+    FONT_OPTIONS[#FONT_OPTIONS + 1] = fallback
+    FONT_BY_ID.frizqt = fallback
+end
+
+local function GetFontFileForRole(role)
+    local db = GetDB()
+    local fonts = db and db.profile and db.profile.fonts
+    local choice = FONT_BY_ID[fonts and fonts[role]] or FONT_BY_ID.frizqt
+    return choice.file
+end
+
+local function GetFontChoice(role)
+    local db = GetDB()
+    local fonts = db and db.profile and db.profile.fonts
+    local id = fonts and fonts[role]
+    if not FONT_BY_ID[id] then return "frizqt" end
+    return id
+end
+
+local function SetFontChoice(role, id)
+    if not FONT_BY_ID[id] then return end
+    local db = GetDB()
+    if not db or not db.profile then return end
+    db.profile.fonts = db.profile.fonts or {}
+    db.profile.fonts[role] = id
+    if vitalFrameFrame then UpdateProgressBarLayout() end
+end
+
+local fontMetrics = {}
+
+function fontMetrics.clamp(value, minValue, maxValue, fallback)
+    local n = tonumber(value)
+    if not n then return fallback end
+    n = math.floor(n + 0.5)
+    if n < minValue then n = minValue end
+    if n > maxValue then n = maxValue end
+    return n
+end
+
+function fontMetrics.nameSize()
+    local db = GetDB()
+    local fonts = db and db.profile and db.profile.fonts
+    return fontMetrics.clamp(fonts and fonts.nameSize, NAME_MIN_FONT_SIZE,
+                            NAME_FIRST_FONT_SIZE, NAME_FIRST_FONT_SIZE)
+end
+
+function fontMetrics.lastPercent()
+    local db = GetDB()
+    local fonts = db and db.profile and db.profile.fonts
+    return fontMetrics.clamp(fonts and fonts.lastNamePercent, 25, 100, 50)
+end
+
+function fontMetrics.barSize()
+    local db = GetDB()
+    local fonts = db and db.profile and db.profile.fonts
+    return fontMetrics.clamp(fonts and fonts.barSize, 8, 16, 12)
+end
+
+function fontMetrics.set(key, value)
+    local db = GetDB()
+    if not db or not db.profile then return end
+    db.profile.fonts = db.profile.fonts or {}
+    db.profile.fonts[key] = value
+    if vitalFrameFrame then UpdateProgressBarLayout() end
+end
+
+function fontMetrics.lastSize(nameSize)
+    local size = math.floor((tonumber(nameSize) or fontMetrics.nameSize()) *
+                                fontMetrics.lastPercent() / 100)
+    if size < 1 then size = 1 end
+    return size
+end
+
+function fontMetrics.iconSize(nameSize, nameMax)
+    if nameSize < nameMax then return nameSize end
+    local full = math.floor(nameMax * NAME_ICON_SIZE / NAME_FIRST_FONT_SIZE +
+                                0.5)
+    if full < NAME_MIN_FONT_SIZE then full = NAME_MIN_FONT_SIZE end
+    return full
+end
+
+function fontMetrics.fitBar(maxSize, barHeight, pad)
+    maxSize = fontMetrics.clamp(maxSize, 8, 16, 12)
+    local size = math.floor((tonumber(barHeight) or maxSize) - (pad or 2))
+    if size > maxSize then size = maxSize end
+    if size < 8 then size = 8 end
+    if size > maxSize then size = maxSize end
+    return size
+end
+
+local ownedFonts = {}
+
+local function ClearTextShadow(fontString)
+    if fontString.SetShadowOffset then fontString:SetShadowOffset(0, 0) end
+    if fontString.SetShadowColor then fontString:SetShadowColor(0, 0, 0, 0) end
+end
+
+local function ApplyPlainFont(fontString, file, size)
     if not fontString then return end
-    local fontPath, _, flags = fontString:GetFont()
-    fontString:SetFont(fontPath or "Fonts\\FRIZQT__.TTF", size, flags)
+    size = math.floor(tonumber(size) or 12)
+    if size < 1 then size = 1 end
+    fontString:SetFont(file or "Fonts\\FRIZQT__.TTF", size, "")
+    ClearTextShadow(fontString)
 end
 
-local function GetHeaderNameBottom()
-    local lastNameText = vitalFrameFrame and vitalFrameFrame.LastNameText
-    if lastNameText and lastNameText:IsShown() then
-        return lastNameText:GetBottom()
+local function ApplyOwnedFont(fontString, key, size)
+    if not fontString or not key then return end
+    size = math.floor(tonumber(size) or 12)
+    if size < 1 then size = 1 end
+    local role = "name"
+    if key == "Level" then role = "level" end
+    local font = ownedFonts[key]
+    if not font then
+        font = CreateFont("VitalFrameFont" .. key)
+        ownedFonts[key] = font
     end
-    if vitalFrameFrame and vitalFrameFrame.NameText then
-        return vitalFrameFrame.NameText:GetBottom()
-    end
-    return nil
+    font:SetFont(GetFontFileForRole(role), size, "")
+    if font.SetFontHeight then pcall(font.SetFontHeight, font, size) end
+    fontString:SetFontObject(font)
+    ClearTextShadow(fontString)
 end
 
-local function UpdateHeaderLayout()
+local currentNamePointSize = NAME_FIRST_FONT_SIZE
+
+local function StringPixels(fontString, methodName, fallback)
+    if not fontString or not fontString[methodName] then return fallback end
+    local ok, value = pcall(fontString[methodName], fontString)
+    value = ok and tonumber(value) or nil
+    if not value then return fallback end
+    return math.ceil(value)
+end
+
+local function UpdateHeaderLayout(nameSize)
     if not vitalFrameFrame or not vitalFrameFrame.NameText or
         not vitalFrameFrame.ClassIcon then return end
+
+    local nameMax = fontMetrics.nameSize()
+    nameSize = tonumber(nameSize) or currentNamePointSize
+    if nameSize > nameMax then nameSize = nameMax end
+    if nameSize < NAME_MIN_FONT_SIZE then nameSize = NAME_MIN_FONT_SIZE end
+    currentNamePointSize = nameSize
+
+    local lastSize = fontMetrics.lastSize(nameSize)
+    local iconSize = fontMetrics.iconSize(nameSize, nameMax)
 
     local nameText = vitalFrameFrame.NameText
     local lastNameText = vitalFrameFrame.LastNameText
     local classIcon = vitalFrameFrame.ClassIcon
+    classIcon:SetSize(iconSize, iconSize)
     local maxWidth = GetNameMaxWidth()
-    local firstName, lastName = SplitDisplayName(GetDisplayName())
+    RefreshCachedDisplayName()
+    local firstName = cachedFirstName or L["Character"]
+    local lastName = cachedLastName
 
-    ApplyNameFont(nameText, NAME_FIRST_FONT_SIZE)
+    ApplyOwnedFont(nameText, "Name", nameSize)
     nameText:SetWidth(maxWidth)
     nameText:SetWordWrap(true)
     nameText:SetNonSpaceWrap(true)
@@ -352,14 +583,11 @@ local function UpdateHeaderLayout()
     nameText:SetJustifyV("TOP")
     nameText:SetText(firstName)
 
-    local nameWidth = math.ceil(nameText:GetStringWidth() or 0)
-    if nameWidth > maxWidth then nameWidth = maxWidth end
-    local nameHeight = math.ceil(nameText:GetStringHeight() or
-                                     classIcon:GetHeight())
-
+    -- Show the last name before measuring. GetStringWidth throws on Forever
+    -- secret values and was aborting this function before the second line.
     if lastNameText then
-        if lastName then
-            ApplyNameFont(lastNameText, NAME_LAST_FONT_SIZE)
+        if NameIsPresent(lastName) then
+            ApplyOwnedFont(lastNameText, "LastName", lastSize)
             lastNameText:SetWidth(maxWidth)
             lastNameText:SetWordWrap(true)
             lastNameText:SetNonSpaceWrap(true)
@@ -367,22 +595,26 @@ local function UpdateHeaderLayout()
             lastNameText:SetJustifyV("TOP")
             lastNameText:SetText(lastName)
             lastNameText:Show()
-            local lastWidth = math.ceil(lastNameText:GetStringWidth() or 0)
-            if lastWidth > maxWidth then lastWidth = maxWidth end
-            if lastWidth > nameWidth then nameWidth = lastWidth end
-            nameHeight = nameHeight +
-                             math.ceil(lastNameText:GetStringHeight() or
-                                           NAME_LAST_FONT_SIZE)
         else
             lastNameText:SetText("")
             lastNameText:Hide()
         end
     end
 
+    local nameWidth = StringPixels(nameText, "GetStringWidth", maxWidth)
+    if nameWidth > maxWidth then nameWidth = maxWidth end
+    local nameHeight = nameSize
+    if lastNameText and lastNameText:IsShown() then
+        local lastWidth = StringPixels(lastNameText, "GetStringWidth", maxWidth)
+        if lastWidth > maxWidth then lastWidth = maxWidth end
+        if lastWidth > nameWidth then nameWidth = lastWidth end
+        nameHeight = nameHeight + lastSize
+    end
+
     local headerHeight = math.max(classIcon:GetHeight(), nameHeight)
     if vitalFrameFrame.HeaderGroup then
-        vitalFrameFrame.HeaderGroup:SetSize(classIcon:GetWidth() + NAME_ICON_GAP +
-                                                nameWidth, headerHeight)
+        vitalFrameFrame.HeaderGroup:SetSize(
+            classIcon:GetWidth() + NAME_ICON_GAP + nameWidth, headerHeight)
     end
 end
 
@@ -429,7 +661,9 @@ local function HookCompactUnitFrameName()
     hooksecurefunc("CompactUnitFrame_UpdateName", function(frame)
         if not streamerModeActive then return end
         if not frame or not frame.name then return end
-        if not C_NamePlate or not C_NamePlate.GetNamePlateForUnit then return end
+        if not C_NamePlate or not C_NamePlate.GetNamePlateForUnit then
+            return
+        end
         local plate = C_NamePlate.GetNamePlateForUnit("player")
         if plate and plate.UnitFrame == frame then
             SafeSetUnitName(frame.name, GetDisplayName())
@@ -476,22 +710,21 @@ local function HookStreamerUnitNames()
         HookNameFontString(PlayerFrame.name)
     end
     if TargetFrame and TargetFrame.name then
-        HookNameFontString(TargetFrame.name, function()
-            return targetShowsPlayer
-        end)
+        HookNameFontString(TargetFrame.name,
+                           function() return targetShowsPlayer end)
     end
     if FocusFrame and FocusFrame.name then
-        HookNameFontString(FocusFrame.name, function()
-            return focusShowsPlayer
-        end)
+        HookNameFontString(FocusFrame.name,
+                           function() return focusShowsPlayer end)
     end
 
     HookCompactUnitFrameName()
 
     local nameEventFrame = CreateFrame("Frame")
-    local registerNameEvent = Compat.RegisterEvent or function(frame, event)
-        frame:RegisterEvent(event)
-    end
+    local registerNameEvent = Compat.RegisterEvent or
+                                  function(frame, event)
+            frame:RegisterEvent(event)
+        end
     registerNameEvent(nameEventFrame, "NAME_PLATE_UNIT_ADDED")
     registerNameEvent(nameEventFrame, "UNIT_NAME_UPDATE")
     registerNameEvent(nameEventFrame, "PLAYER_TARGET_CHANGED")
@@ -512,7 +745,9 @@ local function HookStreamerUnitNames()
                 end
                 return
             end
-            if unit and NameEqualsPlayer(unit) then ApplyStreamerUnitNames() end
+            if unit and NameEqualsPlayer(unit) then
+                ApplyStreamerUnitNames()
+            end
         end)
     end)
 
@@ -520,8 +755,18 @@ local function HookStreamerUnitNames()
 end
 
 local function UpdateNameText()
-    if vitalFrameFrame and vitalFrameFrame.NameText then
-        UpdateHeaderLayout()
+    local function apply()
+        RefreshCachedDisplayName()
+        if vitalFrameFrame and vitalFrameFrame.NameText then
+            UpdateHeaderLayout()
+        end
+        if vitalFrameFrame then UpdateProgressBarLayout() end
+    end
+    -- Read the name on the next frame so a secret UnitName is not compared.
+    if Compat.After then
+        Compat.After(0, apply)
+    else
+        apply()
     end
     ApplyStreamerUnitNames()
 end
@@ -617,7 +862,9 @@ local function SetReputationAutoSwitch(enabled)
 end
 
 local function SetBarPercent(barKey, percent)
-    if not vitalFrameFrame or not vitalFrameFrame.ProgressBarsByKey then return end
+    if not vitalFrameFrame or not vitalFrameFrame.ProgressBarsByKey then
+        return
+    end
     local bar = vitalFrameFrame.ProgressBarsByKey[barKey]
     if not bar then return end
     local p = tonumber(percent) or 0
@@ -632,7 +879,9 @@ local function SetBarPercent(barKey, percent)
 end
 
 local function SetBarColor(barKey, r, g, b, a)
-    if not vitalFrameFrame or not vitalFrameFrame.ProgressBarsByKey then return end
+    if not vitalFrameFrame or not vitalFrameFrame.ProgressBarsByKey then
+        return
+    end
     local bar = vitalFrameFrame.ProgressBarsByKey[barKey]
     if not bar then return end
 
@@ -654,14 +903,11 @@ local function SetBarColor(barKey, r, g, b, a)
 end
 
 local function SetBarLabelText(barKey, text)
-    if not vitalFrameFrame or not vitalFrameFrame.ProgressBarsByKey then return end
+    if not vitalFrameFrame or not vitalFrameFrame.ProgressBarsByKey then
+        return
+    end
     local bar = vitalFrameFrame.ProgressBarsByKey[barKey]
     if not bar or not bar.LabelText then return end
-    if barKey == "reputation" then
-        bar.LabelText:SetFontObject(GameFontHighlightSmall)
-    else
-        bar.LabelText:SetFontObject(GameFontHighlight)
-    end
     bar.LabelText:SetText(text or "")
 end
 
@@ -674,7 +920,9 @@ local function SetLevelText(level)
 end
 
 local function SetBarBackgroundPercent(barKey, percent)
-    if not vitalFrameFrame or not vitalFrameFrame.ProgressBarsByKey then return end
+    if not vitalFrameFrame or not vitalFrameFrame.ProgressBarsByKey then
+        return
+    end
     local bar = vitalFrameFrame.ProgressBarsByKey[barKey]
     if not bar or not bar.BgFill then return end
     local p = tonumber(percent) or 0
@@ -752,11 +1000,10 @@ local function SaveFrameSize(width, height)
 end
 
 local EDIT_MODE_SNAP_METHODS = {
-    "IsToTheLeftOfFrame", "IsToTheRightOfFrame", "IsAboveFrame",
-    "IsBelowFrame", "IsVerticallyAlignedWithFrame",
-    "IsHorizontallyAlignedWithFrame", "GetScaledSelectionCenter",
-    "GetScaledCenter", "GetScaledSelectionSides", "GetLeftOffset",
-    "GetRightOffset", "GetTopOffset", "GetBottomOffset",
+    "IsToTheLeftOfFrame", "IsToTheRightOfFrame", "IsAboveFrame", "IsBelowFrame",
+    "IsVerticallyAlignedWithFrame", "IsHorizontallyAlignedWithFrame",
+    "GetScaledSelectionCenter", "GetScaledCenter", "GetScaledSelectionSides",
+    "GetLeftOffset", "GetRightOffset", "GetTopOffset", "GetBottomOffset",
     "GetSelectionOffset", "GetCombinedSelectionOffset",
     "GetCombinedCenterOffset", "GetSnapOffsets", "AddSnappedFrame",
     "RemoveSnappedFrame", "BreakSnappedFrames", "SetSnappedToFrame",
@@ -814,8 +1061,8 @@ local function AttachEditModeSnapAPI(frame)
 end
 
 local function HasMagneticPreviewAPI(frame)
-    return frame and frame.GetFrameMagneticEligibility
-               and frame.GetScaledSelectionSides
+    return frame and frame.GetFrameMagneticEligibility and
+               frame.GetScaledSelectionSides
 end
 
 local function BakeFrameToUIParent(deltaX, deltaY)
@@ -871,8 +1118,8 @@ local function ProcessNudgeKey(key)
 end
 
 local function OnEditModeNudgeKey(self, key)
-    local isArrow = key == "UP" or key == "DOWN" or key == "LEFT" or
-                        key == "RIGHT"
+    local isArrow = key == "UP" or key == "DOWN" or key == "LEFT" or key ==
+                        "RIGHT"
     local handle = layoutFocus ~= nil and IsEditModeOpen() and isArrow
     if self.SetPropagateKeyboardInput then
         pcall(self.SetPropagateKeyboardInput, self, not handle)
@@ -883,9 +1130,7 @@ end
 local function UpdateNudgeKeyboard()
     local mainActive = layoutFocus == "main" and IsEditModeOpen() or false
     local skillsActive = layoutFocus == "skills" and IsEditModeOpen() or false
-    if vitalFrameFrame then
-        vitalFrameFrame:EnableKeyboard(mainActive)
-    end
+    if vitalFrameFrame then vitalFrameFrame:EnableKeyboard(mainActive) end
     if vitalFrameSettingsPanel then
         vitalFrameSettingsPanel:EnableKeyboard(mainActive)
     end
@@ -934,15 +1179,17 @@ local function FinishEditModeDrag(frame)
 end
 
 UpdateProgressBarLayout = function()
-    if not vitalFrameFrame or not vitalFrameFrame.ProgressBarsByKey then return end
+    if not vitalFrameFrame or not vitalFrameFrame.ProgressBarsByKey then
+        return
+    end
 
     local borderInset = 4
     local bottomPadding = (vitalFrameFrame.ProgressBottomPadding or 0) +
                               borderInset
     local usableWidth = vitalFrameFrame:GetWidth() - (borderInset * 2)
     local frameHeight = vitalFrameFrame:GetHeight()
-
-    UpdateHeaderLayout()
+    RefreshCachedDisplayName()
+    local hasLastName = NameIsPresent(cachedLastName)
 
     local enabledKeys = GetEnabledBarKeys()
     local barCount = #enabledKeys
@@ -958,13 +1205,12 @@ UpdateProgressBarLayout = function()
         end
     end
 
-    local headerReserve = 10
-    if vitalFrameFrame.HeaderGroup then
-        headerReserve = headerReserve +
-                            (vitalFrameFrame.HeaderGroup:GetHeight() or
-                                NAME_FIRST_FONT_SIZE)
-    else
-        headerReserve = headerReserve + NAME_FIRST_FONT_SIZE
+    -- Keep the bar budget on the full-size header. A shrunk name must not
+    -- hand that freed space back to the bars.
+    local nameMax = fontMetrics.nameSize()
+    local headerReserve = 10 + nameMax
+    if hasLastName then
+        headerReserve = headerReserve + fontMetrics.lastSize(nameMax)
     end
     local minLevelSpace = LEVEL_MIN_FONT_SIZE +
                               (LEVEL_TEXT_VERTICAL_PADDING * 2)
@@ -979,9 +1225,7 @@ UpdateProgressBarLayout = function()
     end
     local fitScale = 1
     if desiredBarsHeight > 0 and maxBarsHeight > 0 and desiredBarsHeight >
-        maxBarsHeight then
-        fitScale = maxBarsHeight / desiredBarsHeight
-    end
+        maxBarsHeight then fitScale = maxBarsHeight / desiredBarsHeight end
 
     local function GetFittedBarHeight(barKey)
         local height = math.floor(GetDesiredBarHeight(barKey) * fitScale + 0.5)
@@ -990,13 +1234,14 @@ UpdateProgressBarLayout = function()
     end
 
     local firstVisibleBar = nil
+    local topPadding = frameHeight - bottomPadding
     if barCount >= 1 then
         local barsHeight = 0
         for _, key in ipairs(enabledKeys) do
             barsHeight = barsHeight + GetFittedBarHeight(key)
         end
 
-        local topPadding = frameHeight - bottomPadding - barsHeight
+        topPadding = frameHeight - bottomPadding - barsHeight
         if topPadding < borderInset then topPadding = borderInset end
 
         local previousBar = nil
@@ -1007,10 +1252,9 @@ UpdateProgressBarLayout = function()
                 local barHeight = GetFittedBarHeight(key)
                 bar:SetSize(usableWidth, barHeight)
                 if bar.LabelText then
-                    local fontPath, _, flags = bar.LabelText:GetFont()
-                    local labelSize = math.max(8, math.min(12, barHeight - 2))
-                    bar.LabelText:SetFont(fontPath or "Fonts\\FRIZQT__.TTF",
-                                          labelSize, flags)
+                    ApplyPlainFont(bar.LabelText, GetFontFileForRole("bars"),
+                                   fontMetrics.fitBar(fontMetrics.barSize(), barHeight,
+                                                   2))
                 end
                 if not previousBar then
                     firstVisibleBar = bar
@@ -1027,10 +1271,10 @@ UpdateProgressBarLayout = function()
         if firstVisibleBar then
             vitalFrameFrame.BarRegion:ClearAllPoints()
             vitalFrameFrame.BarRegion:SetPoint("TOPLEFT", firstVisibleBar,
-                                             "TOPLEFT", 0, 0)
+                                               "TOPLEFT", 0, 0)
             vitalFrameFrame.BarRegion:SetPoint("BOTTOMRIGHT", vitalFrameFrame,
-                                             "BOTTOMRIGHT", -borderInset,
-                                             borderInset)
+                                               "BOTTOMRIGHT", -borderInset,
+                                               borderInset)
             vitalFrameFrame.BarRegion:Show()
         else
             vitalFrameFrame.BarRegion:Hide()
@@ -1038,52 +1282,59 @@ UpdateProgressBarLayout = function()
     end
 
     if vitalFrameFrame.LevelText and vitalFrameFrame.NameText then
-        local nameBottom = GetHeaderNameBottom()
-        local frameBottom = vitalFrameFrame:GetBottom()
-        local barTop = firstVisibleBar and firstVisibleBar:GetTop()
-        if not barTop and frameBottom then
-            barTop = frameBottom + bottomPadding
+        local function HeaderHeightFor(nameSize)
+            local textHeight = nameSize
+            if hasLastName then
+                textHeight = textHeight + fontMetrics.lastSize(nameSize)
+            end
+            local iconSize = fontMetrics.iconSize(nameSize, nameMax)
+            if iconSize > textHeight then return iconSize end
+            return textHeight
         end
 
-        if nameBottom and barTop and frameBottom then
-            local availableHeight = math.floor(
-                                        (nameBottom - barTop) -
-                                            (LEVEL_TEXT_VERTICAL_PADDING * 2))
-            if availableHeight < LEVEL_MIN_FONT_SIZE then
-                availableHeight = LEVEL_MIN_FONT_SIZE
-            end
+        -- Room above the bars, under the header inset, for the name plus level.
+        local room = topPadding - 10 - (LEVEL_TEXT_VERTICAL_PADDING * 2)
+        if room < LEVEL_MIN_FONT_SIZE then room = LEVEL_MIN_FONT_SIZE end
 
-            local fontPath, _, flags = vitalFrameFrame.LevelText:GetFont()
-            local size = math.max(LEVEL_MIN_FONT_SIZE, availableHeight)
-            vitalFrameFrame.LevelText:SetFont(fontPath or "Fonts\\FRIZQT__.TTF",
-                                            size, flags)
-
-            local textHeight = vitalFrameFrame.LevelText:GetStringHeight() or size
-            while size > LEVEL_MIN_FONT_SIZE and textHeight > availableHeight do
-                size = size - 1
-                vitalFrameFrame.LevelText:SetFont(fontPath or
-                                                    "Fonts\\FRIZQT__.TTF", size,
-                                                flags)
-                textHeight = vitalFrameFrame.LevelText:GetStringHeight() or size
-            end
-
-            local topY = nameBottom - LEVEL_TEXT_VERTICAL_PADDING
-            local bottomY = barTop + LEVEL_TEXT_VERTICAL_PADDING
-            local midY = (topY + bottomY) / 2
-
-            vitalFrameFrame.LevelText:ClearAllPoints()
-            vitalFrameFrame.LevelText:SetPoint("CENTER", vitalFrameFrame, "BOTTOM",
-                                             0, midY - frameBottom)
-        elseif not levelLayoutRetryPending then
-            -- GetBottom/GetTop are nil until the next frame after /reload.
-            levelLayoutRetryPending = true
-            Compat.After(0, function()
-                levelLayoutRetryPending = false
-                if vitalFrameFrame then UpdateProgressBarLayout() end
-            end)
+        local nameSize = nameMax
+        local levelSize = room - HeaderHeightFor(nameSize)
+        local gap = LEVEL_NAME_POINT_GAP
+        if levelSize < nameSize + gap then
+            local lastShare = 0
+            if hasLastName then lastShare = fontMetrics.lastPercent() / 100 end
+            levelSize = math.floor((room + ((1 + lastShare) * gap)) /
+                                       (2 + lastShare))
+            nameSize = levelSize - gap
         end
+        if nameSize > nameMax then nameSize = nameMax end
+        if nameSize < NAME_MIN_FONT_SIZE then
+            nameSize = NAME_MIN_FONT_SIZE
+        end
+        if levelSize < nameSize + gap then levelSize = nameSize + gap end
+        if levelSize < LEVEL_MIN_FONT_SIZE then
+            levelSize = LEVEL_MIN_FONT_SIZE
+        end
+
+        UpdateHeaderLayout(nameSize)
+        ApplyOwnedFont(vitalFrameFrame.LevelText, "Level", levelSize)
+
+        -- Hang the level under the names. A centered anchor draws half the
+        -- glyphs upward and was covering the Forever last name.
+        local headerHeight = HeaderHeightFor(nameSize)
+        if vitalFrameFrame.LastNameText and
+            vitalFrameFrame.LastNameText:IsShown() then
+            local shownHeight = nameSize + fontMetrics.lastSize(nameSize)
+            if shownHeight > headerHeight then headerHeight = shownHeight end
+        end
+        vitalFrameFrame.LevelText:SetJustifyH("CENTER")
+        vitalFrameFrame.LevelText:SetJustifyV("TOP")
+        vitalFrameFrame.LevelText:ClearAllPoints()
+        vitalFrameFrame.LevelText:SetPoint("TOP", vitalFrameFrame, "TOP", 0,
+                                           -(10 + headerHeight +
+                                               LEVEL_TEXT_VERTICAL_PADDING))
     end
 
+    ApplyMainContentOpacity()
 end
 
 local function ApplyFrameSize(width, height)
@@ -1110,18 +1361,28 @@ local function ClampSizeValue(value, minSize, maxSize)
     return n
 end
 
-local function CreateSizeSlider(name, parent)
+local SETTINGS_SLIDER_WIDTH = 200
+
+local function CreateSizeSlider(name, parent, width)
+    width = width or SETTINGS_SLIDER_WIDTH
     local ok, control = pcall(CreateFrame, "Frame", name, parent,
                               "MinimalSliderWithSteppersTemplate")
     if ok and control and control.Slider then
-        control:SetSize(220, 32)
+        control:SetSize(width, 32)
+        if control.MinText then control.MinText:Hide() end
+        if control.MaxText then control.MaxText:Hide() end
+        if control.TopText then control.TopText:Hide() end
+        if control.LeftText then control.LeftText:Hide() end
+        if control.RightText then control.RightText:Hide() end
         return control, control.Slider
     end
 
     local slider = CreateFrame("Slider", name, parent, "OptionsSliderTemplate")
-    slider:SetSize(200, 17)
+    slider:SetSize(width, 17)
     slider:SetOrientation("HORIZONTAL")
-    if slider.SetObeyStepOnDrag then pcall(slider.SetObeyStepOnDrag, slider, true) end
+    if slider.SetObeyStepOnDrag then
+        pcall(slider.SetObeyStepOnDrag, slider, true)
+    end
     local text = _G[name .. "Text"]
     local low = _G[name .. "Low"]
     local high = _G[name .. "High"]
@@ -1131,8 +1392,318 @@ local function CreateSizeSlider(name, parent)
     return slider, slider
 end
 
+local fontDropdownSerial = 0
+
+local function FontChoiceLabel(getId)
+    local choice = FONT_BY_ID[getId()] or FONT_OPTIONS[1]
+    return choice.label
+end
+
+local previewFonts = {}
+
+local function PreviewFontObject(option, size)
+    if not option then return nil end
+    size = size or 14
+    local key = option.id .. tostring(size)
+    local font = previewFonts[key]
+    if font then return font end
+    font = CreateFont("VitalFramePreview" .. key)
+    local ok, result = pcall(font.SetFont, font, option.file, size, "")
+    if not ok or result == false then return nil end
+    previewFonts[key] = font
+    return font
+end
+
+local function ApplyClosedDropdownFont(dropdown, option)
+    if not dropdown or not option then return end
+    local fontObject = PreviewFontObject(option, 12)
+    if dropdown.SetDefaultText then dropdown:SetDefaultText(option.label) end
+    if dropdown.Text and fontObject then
+        dropdown.Text:SetFontObject(fontObject)
+        dropdown.Text:SetText(option.label)
+    end
+    local frameName = dropdown.GetName and dropdown:GetName()
+    local classicText = frameName and _G[frameName .. "Text"]
+    if classicText and fontObject and classicText ~= dropdown.Text then
+        classicText:SetFontObject(fontObject)
+    end
+end
+
+local function CreateModernFontDropdown(parent, label, getId, setId, width,
+                                         below)
+    if not MenuUtil then return nil end
+    local ok, dropdown = pcall(CreateFrame, "DropdownButton", nil, parent,
+                               "WowStyle1DropdownTemplate")
+    if not ok or not dropdown or not dropdown.SetupMenu then return nil end
+
+    dropdown:SetWidth(width or 170)
+    if below then
+        dropdown:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 0, -2)
+    else
+        dropdown:SetPoint("LEFT", label, "RIGHT", 8, 0)
+    end
+
+    hooksecurefunc(dropdown, "OnMenuOpened", function(_, menu)
+        if not menu then return end
+        if menu.SetFrameStrata then menu:SetFrameStrata("TOOLTIP") end
+        if menu.SetToplevel then menu:SetToplevel(true) end
+        if menu.SetFrameLevel then pcall(menu.SetFrameLevel, menu, 2000) end
+    end)
+
+    local function SelectedOption()
+        return FONT_BY_ID[getId()] or FONT_OPTIONS[1]
+    end
+
+    dropdown:SetupMenu(function(_, rootDescription)
+        if not rootDescription.CreateButton then return end
+        for _, option in ipairs(FONT_OPTIONS) do
+            local id = option.id
+            local row = rootDescription:CreateButton(option.label, function()
+                setId(id)
+                if Compat.After then
+                    Compat.After(0, function()
+                        ApplyClosedDropdownFont(dropdown, option)
+                    end)
+                else
+                    ApplyClosedDropdownFont(dropdown, option)
+                end
+            end)
+            if row and row.AddInitializer then
+                row:AddInitializer(function(button)
+                    local fontObject = PreviewFontObject(option, 14)
+                    if button.fontString and fontObject then
+                        button.fontString:SetFontObject(fontObject)
+                    end
+                    if button.HookScript and not button.vitalFrameKeepsFocus then
+                        button.vitalFrameKeepsFocus = true
+                        button:HookScript("OnMouseDown", function()
+                            suppressNextFocusClear = true
+                        end)
+                    end
+                    return 220, 24
+                end)
+            end
+        end
+    end)
+
+    dropdown.Refresh = function()
+        ApplyClosedDropdownFont(dropdown, SelectedOption())
+    end
+    dropdown.Refresh()
+    return dropdown
+end
+
+local function CreateClassicFontDropdown(parent, label, getId, setId, width,
+                                          below)
+    if not UIDropDownMenu_Initialize or not UIDropDownMenu_SetText then
+        return nil
+    end
+    fontDropdownSerial = fontDropdownSerial + 1
+    local dropdown = CreateFrame("Frame", "VitalFrameFontDropdown" ..
+                                     fontDropdownSerial, parent,
+                                 "UIDropDownMenuTemplate")
+    if below then
+        dropdown:SetPoint("TOPLEFT", label, "BOTTOMLEFT", -16, -2)
+    else
+        dropdown:SetPoint("LEFT", label, "RIGHT", -16, -2)
+    end
+    UIDropDownMenu_SetWidth(dropdown, (width or 170) - 20)
+    UIDropDownMenu_JustifyText(dropdown, "LEFT")
+    UIDropDownMenu_Initialize(dropdown, function()
+        for _, option in ipairs(FONT_OPTIONS) do
+            local info = UIDropDownMenu_CreateInfo()
+            info.text = option.label
+            info.notCheckable = true
+            info.fontObject = PreviewFontObject(option, 14)
+            info.func = function()
+                setId(option.id)
+                UIDropDownMenu_SetText(dropdown, option.label)
+                ApplyClosedDropdownFont(dropdown, option)
+            end
+            UIDropDownMenu_AddButton(info)
+        end
+    end)
+    UIDropDownMenu_SetText(dropdown, FontChoiceLabel(getId))
+    ApplyClosedDropdownFont(dropdown, FONT_BY_ID[getId()] or FONT_OPTIONS[1])
+    dropdown.Refresh = function()
+        local option = FONT_BY_ID[getId()] or FONT_OPTIONS[1]
+        UIDropDownMenu_SetText(dropdown, option.label)
+        ApplyClosedDropdownFont(dropdown, option)
+    end
+    return dropdown
+end
+
+local function CreateFontDropdown(parent, label, getId, setId, width, below)
+    return CreateModernFontDropdown(parent, label, getId, setId, width, below) or
+               CreateClassicFontDropdown(parent, label, getId, setId, width,
+                                         below)
+end
+
+function fontMetrics.applyClosedSizeText(dropdown, size)
+    local text = tostring(size)
+    if dropdown.SetDefaultText then dropdown:SetDefaultText(text) end
+    if dropdown.Text then dropdown.Text:SetText(text) end
+    if dropdown.GetName and dropdown:GetName() and UIDropDownMenu_SetText then
+        UIDropDownMenu_SetText(dropdown, text)
+    end
+end
+
+function fontMetrics.raiseOpenMenu(menu)
+    if not menu then return end
+    if menu.SetFrameStrata then menu:SetFrameStrata("TOOLTIP") end
+    if menu.SetToplevel then menu:SetToplevel(true) end
+    if menu.SetFrameLevel then pcall(menu.SetFrameLevel, menu, 2000) end
+end
+
+function fontMetrics.keepMenuRowFocus(button)
+    if not button or not button.HookScript or button.vitalFrameKeepsFocus then
+        return
+    end
+    button.vitalFrameKeepsFocus = true
+    button:HookScript("OnMouseDown", function()
+        suppressNextFocusClear = true
+    end)
+end
+
+function fontMetrics.modernSizeDropdown(parent, relativeTo, minSize, maxSize,
+                                        getSize, setSize)
+    if not MenuUtil or not relativeTo then return nil end
+    local ok, dropdown = pcall(CreateFrame, "DropdownButton", nil, parent,
+                               "WowStyle1DropdownTemplate")
+    if not ok or not dropdown or not dropdown.SetupMenu then return nil end
+
+    dropdown:SetWidth(68)
+    dropdown:SetPoint("TOPLEFT", relativeTo, "TOPRIGHT", 6, 0)
+    hooksecurefunc(dropdown, "OnMenuOpened", function(_, menu)
+        local function fit()
+            fontMetrics.raiseOpenMenu(menu)
+            if menu.SetMinimumWidth then menu:SetMinimumWidth(36) end
+            if menu.SetWidth then menu:SetWidth(44) end
+        end
+        fit()
+        if Compat.After then Compat.After(0, fit) end
+    end)
+
+    dropdown:SetupMenu(function(_, rootDescription)
+        if rootDescription.SetMinimumWidth then
+            rootDescription:SetMinimumWidth(36)
+        end
+        if not rootDescription.CreateButton then return end
+        for size = minSize, maxSize do
+            local picked = size
+            local row = rootDescription:CreateButton(tostring(picked),
+                                                     function()
+                setSize(picked)
+                local function apply()
+                    fontMetrics.applyClosedSizeText(dropdown, getSize())
+                end
+                if Compat.After then
+                    Compat.After(0, apply)
+                else
+                    apply()
+                end
+            end)
+            if row and row.AddInitializer then
+                row:AddInitializer(function(button)
+                    fontMetrics.keepMenuRowFocus(button)
+                    return 28, 20
+                end)
+            end
+        end
+    end)
+
+    dropdown.Refresh = function()
+        fontMetrics.applyClosedSizeText(dropdown, getSize())
+    end
+    dropdown.Refresh()
+    return dropdown
+end
+
+function fontMetrics.classicSizeDropdown(parent, relativeTo, minSize, maxSize,
+                                         getSize, setSize)
+    if not relativeTo or not UIDropDownMenu_Initialize or
+        not UIDropDownMenu_SetText then return nil end
+    fontDropdownSerial = fontDropdownSerial + 1
+    local dropdown = CreateFrame("Frame", "VitalFrameFontSizeDropdown" ..
+                                     fontDropdownSerial, parent,
+                                 "UIDropDownMenuTemplate")
+    dropdown:SetPoint("TOPLEFT", relativeTo, "TOPRIGHT", -12, 0)
+    UIDropDownMenu_SetWidth(dropdown, 36)
+    UIDropDownMenu_JustifyText(dropdown, "LEFT")
+    UIDropDownMenu_Initialize(dropdown, function()
+        for size = minSize, maxSize do
+            local picked = size
+            local info = UIDropDownMenu_CreateInfo()
+            info.text = tostring(picked)
+            info.notCheckable = true
+            info.func = function()
+                setSize(picked)
+                fontMetrics.applyClosedSizeText(dropdown, getSize())
+            end
+            UIDropDownMenu_AddButton(info)
+        end
+    end)
+    dropdown.Refresh = function()
+        fontMetrics.applyClosedSizeText(dropdown, getSize())
+    end
+    dropdown.Refresh()
+    return dropdown
+end
+
+function fontMetrics.sizeDropdown(parent, relativeTo, minSize, maxSize, getSize,
+                                  setSize)
+    return fontMetrics.modernSizeDropdown(parent, relativeTo, minSize, maxSize,
+                                          getSize, setSize) or
+               fontMetrics.classicSizeDropdown(parent, relativeTo, minSize,
+                                               maxSize, getSize, setSize)
+end
+
+local function HideSliderCaptions(control)
+    if not control then return end
+    if control.MinText then control.MinText:Hide() end
+    if control.MaxText then control.MaxText:Hide() end
+    if control.TopText then control.TopText:Hide() end
+    if control.LeftText then control.LeftText:Hide() end
+    if control.RightText then control.RightText:Hide() end
+end
+
+local function CreatePercentSlider(name, parent, label, getPercent, setPercent,
+                                    width)
+    local control, slider = CreateSizeSlider(name, parent,
+                                             width or SETTINGS_SLIDER_WIDTH)
+    control:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 0, -2)
+    slider:SetMinMaxValues(0, 100)
+    slider:SetValueStep(1)
+    if slider.SetObeyStepOnDrag then
+        pcall(slider.SetObeyStepOnDrag, slider, true)
+    end
+    HideSliderCaptions(control)
+
+    local valueText = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    valueText:SetPoint("LEFT", control, "RIGHT", 8, 0)
+    valueText:SetJustifyH("LEFT")
+
+    local function Refresh()
+        local percent = getPercent()
+        valueText:SetText(percent .. "%")
+        if slider:GetValue() ~= percent then slider:SetValue(percent) end
+    end
+
+    slider:SetScript("OnValueChanged", function(_, value)
+        local percent = ClampPercent(value)
+        valueText:SetText(percent .. "%")
+        if getPercent() ~= percent then setPercent(percent) end
+    end)
+
+    control.Refresh = Refresh
+    Refresh()
+    return control
+end
+
 local function SetSelectionVisual(isSelected)
-    if not vitalFrameSelection or not vitalFrameSelection.Background then return end
+    if not vitalFrameSelection or not vitalFrameSelection.Background then
+        return
+    end
 
     if isSelected then
         vitalFrameSelection.Background:SetTexture(
@@ -1173,17 +1744,17 @@ local function AnchorSettingsPanel()
     local saved = GetSettingsPanelSavedPosition()
     if saved then
         vitalFrameSettingsPanel:SetPoint(saved.point or "CENTER", UIParent,
-                                       saved.point or "CENTER", saved.x or 0,
-                                       saved.y or 0)
+                                         saved.point or "CENTER", saved.x or 0,
+                                         saved.y or 0)
         return
     end
 
     if EditModeManagerFrame and EditModeManagerFrame:IsShown() then
         vitalFrameSettingsPanel:SetPoint("TOPRIGHT", EditModeManagerFrame,
-                                       "TOPLEFT", -12, -8)
+                                         "TOPLEFT", -12, -8)
     elseif vitalFrameFrame then
-        vitalFrameSettingsPanel:SetPoint("TOPLEFT", vitalFrameFrame, "TOPRIGHT", 12,
-                                       0)
+        vitalFrameSettingsPanel:SetPoint("TOPLEFT", vitalFrameFrame, "TOPRIGHT",
+                                         12, 0)
     end
 end
 
@@ -1202,24 +1773,49 @@ local function UpdateSettingsPanelVisibility()
     vitalFrameSettingsPanel:SetShown(shouldShow)
 
     if shouldShow then
-        local currentWidth =
-            ClampSizeValue(vitalFrameFrame:GetWidth(), FRAME_MIN_WIDTH,
-                           FRAME_MAX_WIDTH) or DEFAULT_FRAME_WIDTH
-        local currentHeight =
-            ClampSizeValue(vitalFrameFrame:GetHeight(), FRAME_MIN_HEIGHT,
-                           FRAME_MAX_HEIGHT) or DEFAULT_FRAME_HEIGHT
+        local currentWidth = ClampSizeValue(vitalFrameFrame:GetWidth(),
+                                            FRAME_MIN_WIDTH, FRAME_MAX_WIDTH) or
+                                 DEFAULT_FRAME_WIDTH
+        local currentHeight = ClampSizeValue(vitalFrameFrame:GetHeight(),
+                                             FRAME_MIN_HEIGHT, FRAME_MAX_HEIGHT) or
+                                  DEFAULT_FRAME_HEIGHT
         if vitalFrameSettingsPanel.widthSlider then
             vitalFrameSettingsPanel.widthSlider:SetValue(currentWidth)
         end
         if vitalFrameSettingsPanel.widthValueText then
-            vitalFrameSettingsPanel.widthValueText:SetText(tostring(currentWidth))
+            vitalFrameSettingsPanel.widthValueText:SetText(
+                tostring(currentWidth))
         end
         if vitalFrameSettingsPanel.heightSlider then
             vitalFrameSettingsPanel.heightSlider:SetValue(currentHeight)
         end
         if vitalFrameSettingsPanel.heightValueText then
-            vitalFrameSettingsPanel.heightValueText:SetText(
-                tostring(currentHeight))
+            vitalFrameSettingsPanel.heightValueText:SetText(tostring(
+                                                                currentHeight))
+        end
+        if vitalFrameSettingsPanel.nameFontButton then
+            vitalFrameSettingsPanel.nameFontButton.Refresh()
+        end
+        if vitalFrameSettingsPanel.levelFontButton then
+            vitalFrameSettingsPanel.levelFontButton.Refresh()
+        end
+        if vitalFrameSettingsPanel.barsFontButton then
+            vitalFrameSettingsPanel.barsFontButton.Refresh()
+        end
+        if vitalFrameSettingsPanel.nameSizeButton then
+            vitalFrameSettingsPanel.nameSizeButton.Refresh()
+        end
+        if vitalFrameSettingsPanel.barSizeButton then
+            vitalFrameSettingsPanel.barSizeButton.Refresh()
+        end
+        if vitalFrameSettingsPanel.RefreshLastNamePercent then
+            vitalFrameSettingsPanel.RefreshLastNamePercent()
+        end
+        if vitalFrameSettingsPanel.frameOpacitySlider then
+            vitalFrameSettingsPanel.frameOpacitySlider.Refresh()
+        end
+        if vitalFrameSettingsPanel.contentOpacitySlider then
+            vitalFrameSettingsPanel.contentOpacitySlider.Refresh()
         end
     end
 
@@ -1280,9 +1876,7 @@ local function UpdateSettingsPanelVisibility()
 end
 
 SetLayoutFocus = function(which)
-    if which ~= "main" and which ~= "skills" then
-        which = nil
-    end
+    if which ~= "main" and which ~= "skills" then which = nil end
     layoutFocus = which
     selectionFocused = which == "main"
     if which == "main" then
@@ -1356,9 +1950,9 @@ local function ApplySavedFrameLayout()
     if not frameSettings then return end
 
     local width = ClampSizeValue(frameSettings.width, FRAME_MIN_WIDTH,
-                                FRAME_MAX_WIDTH) or DEFAULT_FRAME_WIDTH
+                                 FRAME_MAX_WIDTH) or DEFAULT_FRAME_WIDTH
     local height = ClampSizeValue(frameSettings.height, FRAME_MIN_HEIGHT,
-                                 FRAME_MAX_HEIGHT) or DEFAULT_FRAME_HEIGHT
+                                  FRAME_MAX_HEIGHT) or DEFAULT_FRAME_HEIGHT
 
     vitalFrameFrame:SetSize(width, height)
     AllowClientFramePosition(vitalFrameFrame)
@@ -1425,8 +2019,22 @@ local function ResetToDefaults()
         vitalFrameSettingsPanel.heightValueText:SetText("200")
     end
     local db = GetDB()
-    if db and db.profile then db.profile.theme = "auto" end
+    if db and db.profile then
+        db.profile.theme = "auto"
+        db.profile.fonts = {
+            name = "frizqt",
+            level = "frizqt",
+            bars = "frizqt",
+            nameSize = NAME_FIRST_FONT_SIZE,
+            lastNamePercent = 50,
+            barSize = 12
+        }
+        db.profile.frame = db.profile.frame or {}
+        db.profile.frame.frameOpacity = 100
+        db.profile.frame.contentOpacity = 100
+    end
     ApplyFrameTheme()
+    UpdateProgressBarLayout()
 end
 
 function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
@@ -1435,8 +2043,9 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
     if not frame then return end
     frameWidth = frameWidth or frame:GetWidth()
     frameHeight = frameHeight or frame:GetHeight()
-    local settingsPanel = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
-    settingsPanel:SetSize(360, 632)
+    local settingsPanel =
+        CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
+    settingsPanel:SetSize(560, 640)
     settingsPanel:SetFrameStrata("DIALOG")
     settingsPanel:SetFrameLevel(frame:GetFrameLevel() + 20)
     settingsPanel:SetToplevel(true)
@@ -1447,9 +2056,9 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
     settingsPanel:SetScale(1)
     settingsPanel:Hide()
 
-    local borderOk, settingsPanelBorder = pcall(CreateFrame, "Frame", nil,
-                                                settingsPanel,
-                                                "DialogBorderTranslucentTemplate")
+    local borderOk, settingsPanelBorder =
+        pcall(CreateFrame, "Frame", nil, settingsPanel,
+              "DialogBorderTranslucentTemplate")
     if borderOk and settingsPanelBorder then
         settingsPanelBorder:SetAllPoints(settingsPanel)
     else
@@ -1490,19 +2099,24 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
     local panelCloseButton = CreateFrame("Button", nil, settingsPanel,
                                          "UIPanelCloseButton")
     panelCloseButton:SetPoint("TOPRIGHT")
-    panelCloseButton:SetScript("OnClick", function()
-        SetLayoutFocus(nil)
-    end)
+    panelCloseButton:SetScript("OnClick", function() SetLayoutFocus(nil) end)
+
+    local leftColumn = CreateFrame("Frame", nil, settingsPanel)
+    leftColumn:SetSize(1, 1)
+    leftColumn:SetPoint("TOPLEFT", settingsPanel, "TOPLEFT", 18, -42)
+    local rightColumn = CreateFrame("Frame", nil, settingsPanel)
+    rightColumn:SetSize(1, 1)
+    rightColumn:SetPoint("TOPLEFT", leftColumn, "TOPRIGHT", 268, 0)
 
     local widthLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
                                                       "GameFontHighlightMedium")
-    widthLabel:SetPoint("TOPLEFT", settingsPanel, "TOPLEFT", 20, -42)
+    widthLabel:SetPoint("TOPLEFT", leftColumn, "TOPLEFT", 0, 0)
     widthLabel:SetJustifyH("LEFT")
     widthLabel:SetText(L["Width"])
 
     local widthControl, widthSlider = CreateSizeSlider("VitalFrameWidthSlider",
                                                        settingsPanel)
-    widthControl:SetPoint("LEFT", widthLabel, "LEFT", 60, 0)
+    widthControl:SetPoint("TOPLEFT", widthLabel, "BOTTOMLEFT", 0, -2)
     widthSlider:SetMinMaxValues(FRAME_MIN_WIDTH, FRAME_MAX_WIDTH)
     widthSlider:SetValueStep(10)
     if widthSlider.SetObeyStepOnDrag then
@@ -1544,13 +2158,14 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
 
     local heightLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
                                                        "GameFontHighlightMedium")
-    heightLabel:SetPoint("TOPLEFT", widthLabel, "BOTTOMLEFT", 0, -20)
+    heightLabel:SetPoint("TOPLEFT", widthControl, "BOTTOMLEFT", 0, -10)
     heightLabel:SetJustifyH("LEFT")
     heightLabel:SetText(L["Height"])
 
-    local heightControl, heightSlider =
-        CreateSizeSlider("VitalFrameHeightSlider", settingsPanel)
-    heightControl:SetPoint("LEFT", heightLabel, "LEFT", 60, 0)
+    local heightControl, heightSlider = CreateSizeSlider(
+                                            "VitalFrameHeightSlider",
+                                            settingsPanel)
+    heightControl:SetPoint("TOPLEFT", heightLabel, "BOTTOMLEFT", 0, -2)
     heightSlider:SetMinMaxValues(FRAME_MIN_HEIGHT, FRAME_MAX_HEIGHT)
     heightSlider:SetValueStep(10)
     if heightSlider.SetObeyStepOnDrag then
@@ -1588,7 +2203,7 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
 
     local autoScaleBarsCheck = CreateFrame("CheckButton", nil, settingsPanel,
                                            "UICheckButtonTemplate")
-    autoScaleBarsCheck:SetPoint("TOPLEFT", heightLabel, "BOTTOMLEFT", 10, -8)
+    autoScaleBarsCheck:SetPoint("TOPLEFT", heightControl, "BOTTOMLEFT", 0, -4)
 
     local autoScaleBarsLabel = autoScaleBarsCheck:CreateFontString(nil,
                                                                    "OVERLAY",
@@ -1664,9 +2279,9 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
                 end
             end)
 
-            local hideWhenMaxLevelCheck = CreateFrame("CheckButton", nil,
-                                                      settingsPanel,
-                                                      "UICheckButtonTemplate")
+            local hideWhenMaxLevelCheck =
+                CreateFrame("CheckButton", nil, settingsPanel,
+                            "UICheckButtonTemplate")
             hideWhenMaxLevelCheck:SetPoint("TOPLEFT", useClassColorCheck,
                                            "BOTTOMLEFT", 0, checkGap)
 
@@ -1758,12 +2373,7 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
 
     local optionsLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
                                                         "GameFontHighlightMedium")
-    if prevCheck then
-        local optionsX = alignAfterXpSubsets and -26 or -10
-        optionsLabel:SetPoint("TOPLEFT", prevCheck, "BOTTOMLEFT", optionsX, -8)
-    else
-        optionsLabel:SetPoint("TOPLEFT", barsLabel, "BOTTOMLEFT", 0, -8)
-    end
+    optionsLabel:SetPoint("TOPLEFT", rightColumn, "TOPLEFT", 0, 0)
     optionsLabel:SetJustifyH("LEFT")
     optionsLabel:SetText(L["Options"])
 
@@ -1773,8 +2383,9 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
     hideBlizzardWatchBarCheck:SetPoint("TOPLEFT", optionsLabel, "BOTTOMLEFT",
                                        10, checkGap)
 
-    local hideBlizzardWatchBarLabel = hideBlizzardWatchBarCheck:CreateFontString(
-                                          nil, "OVERLAY", "GameFontHighlight")
+    local hideBlizzardWatchBarLabel =
+        hideBlizzardWatchBarCheck:CreateFontString(nil, "OVERLAY",
+                                                   "GameFontHighlight")
     hideBlizzardWatchBarLabel:SetPoint("LEFT", hideBlizzardWatchBarCheck,
                                        "RIGHT", 10, 1)
     hideBlizzardWatchBarLabel:SetText(L["Hide Default Watch Bar"])
@@ -1879,6 +2490,162 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
         if UI.SetTheme then UI.SetTheme("forever") end
     end)
 
+    local fontsLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                      "GameFontHighlightMedium")
+    fontsLabel:SetPoint("TOPLEFT", themeForeverCheck, "BOTTOMLEFT", -10, -12)
+    fontsLabel:SetJustifyH("LEFT")
+    fontsLabel:SetText(L["Fonts"])
+
+    local nameFontLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                         "GameFontHighlight")
+    nameFontLabel:SetPoint("TOPLEFT", fontsLabel, "BOTTOMLEFT", 10, -10)
+    nameFontLabel:SetJustifyH("LEFT")
+    nameFontLabel:SetText(L["Name"])
+    settingsPanel.nameFontButton = CreateFontDropdown(settingsPanel,
+                                                      nameFontLabel, function()
+        return GetFontChoice("name")
+    end, function(id) SetFontChoice("name", id) end, 176, true)
+    settingsPanel.nameSizeButton = fontMetrics.sizeDropdown(settingsPanel,
+                                                          settingsPanel.nameFontButton,
+                                                          NAME_MIN_FONT_SIZE,
+                                                          NAME_FIRST_FONT_SIZE,
+                                                          fontMetrics.nameSize,
+                                                          function(size)
+        fontMetrics.set("nameSize", fontMetrics.clamp(size, NAME_MIN_FONT_SIZE,
+                                                   NAME_FIRST_FONT_SIZE,
+                                                   NAME_FIRST_FONT_SIZE))
+    end)
+    if settingsPanel.nameSizeButton then
+        local nameSizeLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                             "GameFontHighlight")
+        nameSizeLabel:SetPoint("BOTTOMLEFT", settingsPanel.nameSizeButton,
+                               "TOPLEFT", 0, 2)
+        nameSizeLabel:SetJustifyH("LEFT")
+        nameSizeLabel:SetText(L["Size"])
+    end
+
+    local lastNameLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                         "GameFontHighlight")
+    lastNameLabel:SetPoint("TOPLEFT", settingsPanel.nameFontButton, "BOTTOMLEFT",
+                           0, -12)
+    lastNameLabel:SetJustifyH("LEFT")
+    lastNameLabel:SetText(L["Last Name"])
+    local lastNameControl, lastNameSlider = CreateSizeSlider(
+                                                "VitalFrameLastNamePercentSlider",
+                                                settingsPanel, 176)
+    lastNameControl:SetPoint("TOPLEFT", lastNameLabel, "BOTTOMLEFT", 0, -2)
+    lastNameSlider:SetMinMaxValues(25, 100)
+    lastNameSlider:SetValueStep(1)
+    if lastNameSlider.SetObeyStepOnDrag then
+        pcall(lastNameSlider.SetObeyStepOnDrag, lastNameSlider, true)
+    end
+    local lastNameValue = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                         "GameFontHighlight")
+    lastNameValue:SetPoint("LEFT", lastNameControl, "RIGHT", 6, 0)
+    lastNameSlider:SetScript("OnValueChanged", function(_, value)
+        local percent = fontMetrics.clamp(value, 25, 100, 50)
+        lastNameValue:SetText(percent .. "%")
+        if fontMetrics.lastPercent() ~= percent then
+            fontMetrics.set("lastNamePercent", percent)
+        end
+    end)
+    settingsPanel.RefreshLastNamePercent = function()
+        local percent = fontMetrics.lastPercent()
+        lastNameValue:SetText(percent .. "%")
+        if lastNameSlider:GetValue() ~= percent then
+            lastNameSlider:SetValue(percent)
+        end
+    end
+    settingsPanel.RefreshLastNamePercent()
+
+    local levelFontLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                          "GameFontHighlight")
+    levelFontLabel:SetPoint("TOPLEFT", lastNameControl, "BOTTOMLEFT", 0, -12)
+    levelFontLabel:SetJustifyH("LEFT")
+    levelFontLabel:SetText(L["Level"])
+    settingsPanel.levelFontButton = CreateFontDropdown(settingsPanel,
+                                                       levelFontLabel,
+                                                       function()
+        return GetFontChoice("level")
+    end, function(id) SetFontChoice("level", id) end, 222, true)
+
+    local barsFontLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                         "GameFontHighlight")
+    barsFontLabel:SetPoint("TOPLEFT", settingsPanel.levelFontButton,
+                           "BOTTOMLEFT", 0, -12)
+    barsFontLabel:SetJustifyH("LEFT")
+    barsFontLabel:SetText(L["Bars"])
+    settingsPanel.barsFontButton = CreateFontDropdown(settingsPanel,
+                                                      barsFontLabel, function()
+        return GetFontChoice("bars")
+    end, function(id) SetFontChoice("bars", id) end, 176, true)
+    settingsPanel.barSizeButton = fontMetrics.sizeDropdown(settingsPanel,
+                                                         settingsPanel.barsFontButton,
+                                                         8, 16,
+                                                         fontMetrics.barSize,
+                                                         function(size)
+        fontMetrics.set("barSize", fontMetrics.clamp(size, 8, 16, 12))
+    end)
+    if settingsPanel.barSizeButton then
+        local barsSizeLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                             "GameFontHighlight")
+        barsSizeLabel:SetPoint("BOTTOMLEFT", settingsPanel.barSizeButton,
+                               "TOPLEFT", 0, 2)
+        barsSizeLabel:SetJustifyH("LEFT")
+        barsSizeLabel:SetText(L["Size"])
+    end
+
+    local opacityLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                        "GameFontHighlightMedium")
+    opacityLabel:SetPoint("TOPLEFT", settingsPanel, "TOPLEFT", 18, -560)
+    opacityLabel:SetJustifyH("LEFT")
+    opacityLabel:SetText(L["Opacity"])
+
+    local frameOpacityLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                             "GameFontHighlight")
+    frameOpacityLabel:SetPoint("TOPLEFT", opacityLabel, "BOTTOMLEFT", 0, -8)
+    frameOpacityLabel:SetJustifyH("LEFT")
+    frameOpacityLabel:SetText(L["Frame Opacity"])
+    settingsPanel.frameOpacitySlider = CreatePercentSlider(
+                                           "VitalFrameFrameOpacitySlider",
+                                           settingsPanel, frameOpacityLabel,
+                                           function()
+        return GetFramePercent("frameOpacity")
+    end, function(percent) SetFramePercent("frameOpacity", percent) end)
+
+    local contentOpacityLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                               "GameFontHighlight")
+    contentOpacityLabel:SetPoint("TOPLEFT", frameOpacityLabel, "TOPLEFT", 268, 0)
+    contentOpacityLabel:SetJustifyH("LEFT")
+    contentOpacityLabel:SetText(L["Content Opacity"])
+    settingsPanel.contentOpacitySlider = CreatePercentSlider(
+                                             "VitalFrameContentOpacitySlider",
+                                             settingsPanel, contentOpacityLabel,
+                                             function()
+        return GetFramePercent("contentOpacity")
+    end, function(percent) SetFramePercent("contentOpacity", percent) end)
+
+    local function PlaceOpacityBelowColumns()
+        local top = settingsPanel:GetTop()
+        local leftBottom = prevCheck and prevCheck:GetBottom()
+        local rightBottom = settingsPanel.barsFontButton and
+                                settingsPanel.barsFontButton:GetBottom()
+        if not top or not leftBottom or not rightBottom then return end
+        local lowest = math.min(leftBottom, rightBottom)
+        opacityLabel:ClearAllPoints()
+        opacityLabel:SetPoint("TOPLEFT", settingsPanel, "TOPLEFT", 18,
+                              -(top - lowest) - 18)
+        local needed = (top - lowest) + 18 + 120
+        settingsPanel:SetHeight(math.ceil(needed))
+    end
+    settingsPanel:HookScript("OnShow", function()
+        if Compat.After then
+            Compat.After(0, PlaceOpacityBelowColumns)
+        else
+            PlaceOpacityBelowColumns()
+        end
+    end)
+
     local resetButton = CreateFrame("Button", nil, settingsPanel,
                                     "UIPanelButtonTemplate")
     resetButton:SetSize(200, 22)
@@ -1890,20 +2657,51 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
     end)
 end
 
+local function CursorOverOpenMenu()
+    if Menu and Menu.GetManager then
+        local ok, manager = pcall(Menu.GetManager)
+        if ok and manager and manager.GetOpenMenu then
+            local menuOk, menu = pcall(manager.GetOpenMenu, manager)
+            if menuOk and menu then
+                if menu.IsMouseOver and menu:IsMouseOver() then return true end
+                local foci
+                if GetMouseFoci then
+                    foci = GetMouseFoci()
+                elseif GetMouseFocus then
+                    foci = {GetMouseFocus()}
+                end
+                if foci then
+                    for _, focus in ipairs(foci) do
+                        local frame = focus
+                        while frame do
+                            if frame == menu then return true end
+                            frame = frame.GetParent and frame:GetParent()
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if DropDownList1 and DropDownList1:IsShown() and DropDownList1:IsMouseOver() then
+        return true
+    end
+    return false
+end
+
 local function CreateVitalFrame()
     if vitalFrameFrame then return end
 
     local db = GetDB()
     local frameSettings = db and db.profile and db.profile.frame
     local frameWidth = ClampSizeValue(frameSettings and frameSettings.width,
-                                     FRAME_MIN_WIDTH, FRAME_MAX_WIDTH) or
+                                      FRAME_MIN_WIDTH, FRAME_MAX_WIDTH) or
                            DEFAULT_FRAME_WIDTH
     local frameHeight = ClampSizeValue(frameSettings and frameSettings.height,
-                                      FRAME_MIN_HEIGHT, FRAME_MAX_HEIGHT) or
+                                       FRAME_MIN_HEIGHT, FRAME_MAX_HEIGHT) or
                             DEFAULT_FRAME_HEIGHT
 
     local frame = CreateFrame("Frame", MAIN_FRAME_NAME, UIParent,
-                             "BackdropTemplate")
+                              "BackdropTemplate")
     frame:SetSize(frameWidth, frameHeight)
     frame:SetPoint("CENTER")
     AllowClientFramePosition(frame)
@@ -1937,8 +2735,8 @@ local function CreateVitalFrame()
     selection.Background:SetTexture(
         "Interface/AddOns/VitalFrame/Art/EditModeHighlighted")
     if selection.Background.SetTextureSliceMargins then
-        pcall(selection.Background.SetTextureSliceMargins,
-              selection.Background, 16, 16, 16, 16)
+        pcall(selection.Background.SetTextureSliceMargins, selection.Background,
+              16, 16, 16, 16)
     end
     if selection.Background.SetTextureSliceMode then
         pcall(selection.Background.SetTextureSliceMode, selection.Background, 0)
@@ -2017,6 +2815,7 @@ local function CreateVitalFrame()
                 suppressNextFocusClear = false
                 return
             end
+            if CursorOverOpenMenu() then return end
             local overPanel = vitalFrameSettingsPanel and
                                   vitalFrameSettingsPanel:IsMouseOver()
             local overSkills = UI.IsSkillsFrameMouseOver and
@@ -2024,9 +2823,7 @@ local function CreateVitalFrame()
             local overSkillsPanel = UI.IsSkillsSettingsMouseOver and
                                         UI.IsSkillsSettingsMouseOver()
             if not self:IsMouseOver() and not overPanel and not overSkills and
-                not overSkillsPanel then
-                SetLayoutFocus(nil)
-            end
+                not overSkillsPanel then SetLayoutFocus(nil) end
         end
     end)
 
@@ -2066,37 +2863,36 @@ local function CreateVitalFrame()
     classIconBorder:SetTexture("Interface\\COMMON\\WhiteIconFrame")
 
     frame.ClassIcon = classIcon
+    frame.ClassIconBorder = classIconBorder
 
-    local nameText = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    local nameText = frame:CreateFontString(nil, "OVERLAY")
     nameText:SetPoint("TOPLEFT", classIcon, "TOPRIGHT", NAME_ICON_GAP, 0)
     nameText:SetTextColor(1, 1, 1)
     nameText:SetJustifyH("LEFT")
     nameText:SetJustifyV("TOP")
     nameText:SetWordWrap(true)
     nameText:SetNonSpaceWrap(true)
-
-    local font, _, flags = nameText:GetFont()
-    nameText:SetFont(font or "Fonts\\FRIZQT__.TTF", NAME_FIRST_FONT_SIZE, flags)
     frame.NameText = nameText
+    ApplyOwnedFont(nameText, "Name", NAME_FIRST_FONT_SIZE)
 
-    local lastNameText = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    local lastNameText = frame:CreateFontString(nil, "OVERLAY")
     lastNameText:SetPoint("TOPLEFT", nameText, "BOTTOMLEFT", 0, -1)
     lastNameText:SetTextColor(1, 1, 1)
     lastNameText:SetJustifyH("LEFT")
     lastNameText:SetJustifyV("TOP")
     lastNameText:SetWordWrap(true)
     lastNameText:SetNonSpaceWrap(true)
-    lastNameText:SetFont(font or "Fonts\\FRIZQT__.TTF", NAME_LAST_FONT_SIZE, flags)
     lastNameText:Hide()
     frame.LastNameText = lastNameText
+    ApplyOwnedFont(lastNameText, "LastName", NAME_LAST_FONT_SIZE)
 
     UpdateNameText()
-    local levelText = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    local levelText = frame:CreateFontString(nil, "OVERLAY")
     levelText:SetPoint("TOP", nameText, "BOTTOM", 0, -5)
-    levelText:SetText(tostring(UnitLevel("player") or ""))
     levelText:SetTextColor(1, 1, 1)
-    levelText:SetFont(font or "Fonts\\FRIZQT__.TTF", LEVEL_BASE_FONT_SIZE, flags)
     frame.LevelText = levelText
+    ApplyOwnedFont(levelText, "Level", LEVEL_BASE_FONT_SIZE)
+    levelText:SetText(tostring(UnitLevel("player") or ""))
 
     local barRegion = CreateFrame("Frame", nil, frame)
     barRegion:SetFrameLevel(frame:GetFrameLevel())
@@ -2162,10 +2958,10 @@ local function CreateVitalFrame()
             bar.BgFill = restedFill
         end
 
-        local labelText = bar:CreateFontString(nil, "OVERLAY",
-                                               "GameFontHighlight")
+        local labelText = bar:CreateFontString(nil, "OVERLAY")
         labelText:SetPoint("CENTER", bar, "CENTER", 0, 0)
         labelText:SetJustifyH("CENTER")
+        ApplyPlainFont(labelText, GetFontFileForRole("bars"), 12)
         labelText:SetText("")
         bar.LabelText = labelText
 
@@ -2180,6 +2976,7 @@ local function CreateVitalFrame()
     frame.ProgressBars = barsByKey
     vitalFrameFrame = frame
     UpdateProgressBarLayout()
+    ApplyFrameTheme()
 
     if frameSettings and not ReadFlag(frameSettings.shown, true) then
         SetVitalFrameShown(false)
@@ -2231,13 +3028,30 @@ function UI.SaveAllFramePositions()
 end
 function UI.AttachEditModeSnapAPI(frame) AttachEditModeSnapAPI(frame) end
 function UI.CreateSizeSlider(name, parent) return CreateSizeSlider(name, parent) end
-function UI.GetFrameBorderColor()
-    return GetResolvedThemeColor()
+function UI.GetFontFileById(id)
+    local choice = FONT_BY_ID[id] or FONT_BY_ID.frizqt
+    return choice.file
 end
+function UI.IsFontChoice(id) return FONT_BY_ID[id] ~= nil end
+function UI.CreateFontDropdown(parent, label, getId, setId, width, below)
+    return CreateFontDropdown(parent, label, getId, setId, width, below)
+end
+function UI.CreateFontSizeDropdown(parent, relativeTo, minSize, maxSize, getSize,
+                                   setSize)
+    return fontMetrics.sizeDropdown(parent, relativeTo, minSize, maxSize, getSize,
+                                  setSize)
+end
+function UI.FitBarLabelSize(maxSize, barHeight, pad)
+    return fontMetrics.fitBar(maxSize, barHeight, pad)
+end
+function UI.CreatePercentSlider(name, parent, label, getPercent, setPercent,
+                                 width)
+    return CreatePercentSlider(name, parent, label, getPercent, setPercent,
+                               width)
+end
+function UI.GetFrameBorderColor() return GetResolvedThemeColor() end
 function UI.SetTheme(theme) SetTheme(theme) end
-function UI.FocusForSettings()
-    SetLayoutFocus("main")
-end
+function UI.FocusForSettings() SetLayoutFocus("main") end
 function UI.SetLayoutFocus(which) SetLayoutFocus(which) end
 function UI.GetLayoutFocus() return layoutFocus end
 function UI.OnEditModeNudgeKey(frame, key) OnEditModeNudgeKey(frame, key) end

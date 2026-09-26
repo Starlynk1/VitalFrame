@@ -8,6 +8,8 @@
 - Set the last name as a percentage of the first name size.
 - Fade each frame's border and background separately from the text and bars inside it.
 - List weapon skills above professions, and choose primary and secondary skills on their own.
+- Raise the minimum Vital Frame height so the name and level have room.
+- Show the Forever surname as the last name.
 
 ## [v1.0.1](https://github.com/Starlynk1/VitalFrame/tree/v1.0.1) (2026-09-19)
 [Full Changelog](https://github.com/Starlynk1/VitalFrame/commits/v1.0.1) [Previous Releases](https://github.com/Starlynk1/VitalFrame/releases)

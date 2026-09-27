@@ -1,5 +1,11 @@
 # Vital Frame
 
+## [v1.1.1](https://github.com/Starlynk1/VitalFrame/tree/v1.1.1) (2026-09-26)
+[Full Changelog](https://github.com/Starlynk1/VitalFrame/commits/v1.1.1) [Previous Releases](https://github.com/Starlynk1/VitalFrame/releases)
+
+- Classic Era no longer errors while the skills frame updates.
+- The class icon shows on Classic Era, with rounded corners and a small border.
+
 ## [v1.1.0](https://github.com/Starlynk1/VitalFrame/tree/v1.1.0) (2026-09-25)
 [Full Changelog](https://github.com/Starlynk1/VitalFrame/commits/v1.1.0) [Previous Releases](https://github.com/Starlynk1/VitalFrame/releases)
 

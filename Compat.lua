@@ -17,11 +17,14 @@ end
 
 function Compat.IsClassicEraClient()
     if Compat.IsForeverClient() then return false end
-    if WOW_PROJECT_CLASSIC and WOW_PROJECT_ID == WOW_PROJECT_CLASSIC then
+    local toc = Compat.GetTocVersion()
+    -- Shipped Classic Era interfaces are 11508 and 11509.
+    if toc >= 11500 and toc < 11600 then return true end
+    if WOW_PROJECT_CLASSIC and WOW_PROJECT_ID == WOW_PROJECT_CLASSIC and
+        toc >= 10000 and toc < 16000 then
         return true
     end
-    local toc = Compat.GetTocVersion()
-    return toc >= 10000 and toc < 16000
+    return false
 end
 
 function Compat.IsRetailClient()

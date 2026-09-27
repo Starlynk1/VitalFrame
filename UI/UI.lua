@@ -2834,28 +2834,51 @@ local function CreateVitalFrame()
     local classIcon = frame:CreateTexture(nil, "ARTWORK")
     classIcon:SetSize(22, 22)
     classIcon:SetPoint("TOPLEFT", headerGroup, "TOPLEFT", 0, 0)
-    local _, classTag = UnitClass("player")
-    local atlasName = classTag and GetClassAtlas and
-                          GetClassAtlas(string.lower(classTag))
-    if atlasName then
-        classIcon:SetAtlas(atlasName)
-    else
-        classIcon:SetTexture(
-            "Interface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES")
-        local coords = classTag and CLASS_ICON_TCOORDS and
-                           CLASS_ICON_TCOORDS[classTag]
+    local _, classToken = UnitClass("player")
+    if classToken then classToken = string.upper(classToken) end
+    local eraClient = Compat.IsClassicEraClient and Compat.IsClassicEraClient()
+
+    local function UseAtlas(name)
+        if not name or not C_Texture or not C_Texture.GetAtlasExists then
+            return false
+        end
+        local ok, exists = pcall(C_Texture.GetAtlasExists, name)
+        if not ok or not exists then return false end
+        classIcon:SetAtlas(name)
+        return true
+    end
+
+    local shown = false
+    if classToken and GetClassAtlas then
+        if eraClient then
+            -- UnitFramePortrait_Update: GetClassAtlas(UnitClass token).
+            shown = UseAtlas(GetClassAtlas(classToken))
+        else
+            shown = UseAtlas(GetClassAtlas(string.lower(classToken))) or
+                        UseAtlas(GetClassAtlas(classToken))
+        end
+    end
+    if not shown then
+        classIcon:SetTexture("Interface\\WorldStateFrame\\Icons-Classes")
+        local coords = classToken and CLASS_ICON_TCOORDS and
+                           CLASS_ICON_TCOORDS[classToken]
         if coords then
-            classIcon:SetTexCoord(coords[1], coords[2], coords[3], coords[4])
+            classIcon:SetTexCoord(unpack(coords))
         else
             classIcon:SetTexCoord(0, 1, 0, 1)
         end
     end
 
-    local classsIconMask = frame:CreateMaskTexture(nil, "ARTWORK")
-    classsIconMask:SetTexture("Interface\\COMMON\\CommonIconMask",
-                              "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
-    classsIconMask:SetAllPoints(classIcon)
-    classIcon:AddMaskTexture(classsIconMask)
+    if not eraClient and frame.CreateMaskTexture then
+        local classIconMask = frame:CreateMaskTexture(nil, "ARTWORK")
+        local loaded = classIconMask:SetTexture(
+                           "Interface\\COMMON\\CommonIconMask",
+                           "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+        if loaded == true or loaded == 1 then
+            classIconMask:SetAllPoints(classIcon)
+            classIcon:AddMaskTexture(classIconMask)
+        end
+    end
 
     local classIconBorder = frame:CreateTexture(nil, "OVERLAY")
     classIconBorder:SetPoint("TOPLEFT", classIcon, "TOPLEFT", -2, 2)

@@ -1543,11 +1543,23 @@ local function ScanClassicSkills()
     return visible, catalog
 end
 
+local scanningClassicSkills = false
+
 local function UpdateSkillsFrame()
+    -- ExpandSkillHeader fires SKILL_LINES_CHANGED before it returns on
+    -- Classic Era. Ignore that re-entry and finish the scan already running.
+    if scanningClassicSkills then return end
     local ui = GetUI()
     if not ui or not ui.SetSkillsData then return end
     if ui.CreateSkillsFrame then ui.CreateSkillsFrame() end
-    local visible, catalog = ScanClassicSkills()
+    scanningClassicSkills = true
+    local ok, visible, catalog = pcall(ScanClassicSkills)
+    scanningClassicSkills = false
+    if not ok then
+        local handler = geterrorhandler and geterrorhandler()
+        if handler then handler(visible) end
+        return
+    end
     ui.SetSkillsData(visible, catalog)
 end
 

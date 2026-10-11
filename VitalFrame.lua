@@ -29,7 +29,6 @@ local defaults = {
         bars = {
             enabled = {
                 xpFill = true,
-                xpRemaining = true,
                 petXp = false,
                 reputation = true,
                 crafting = true
@@ -235,51 +234,6 @@ local function UpdateXPFillBar()
     local pctInt = math.floor((pct * 100) + 0.5)
     ui.SetBarLabelText("xpFill", string.format(L["%d / %d (%d%%)"], currentXP,
                                                maxXP, pctInt))
-end
-
-local function UpdateXPRemainingBar()
-    local ui = GetUI()
-    if not ui or not ui.SetBarPercent then return end
-
-    local xpInactive = IsPlayerXPInactive()
-    local hideAtMax = GetXPFillHideWhenMaxLevel()
-    if ui.SetBarRuntimeHidden then
-        ui.SetBarRuntimeHidden("xpRemaining", hideAtMax and xpInactive)
-    end
-
-    if ui.IsBarEnabled and not ui.IsBarEnabled("xpRemaining") then
-        ui.SetBarPercent("xpRemaining", 0)
-        if ui.SetBarLabelText then ui.SetBarLabelText("xpRemaining", "") end
-        return
-    end
-
-    if hideAtMax and xpInactive then
-        ui.SetBarPercent("xpRemaining", 0)
-        if ui.SetBarLabelText then ui.SetBarLabelText("xpRemaining", "") end
-        return
-    end
-
-    if xpInactive then
-        ui.SetBarPercent("xpRemaining", 0)
-        if ui.SetBarLabelText then
-            ui.SetBarLabelText("xpRemaining", L["Max Level"])
-        end
-        return
-    end
-
-    local currentXP = UnitXP("player") or 0
-    local maxXP = UnitXPMax("player") or 0
-    local remainingXP = 0
-    local pct = 0
-    if maxXP > 0 then
-        remainingXP = maxXP - currentXP
-        if remainingXP < 0 then remainingXP = 0 end
-        pct = remainingXP / maxXP
-    end
-
-    ui.SetBarPercent("xpRemaining", pct)
-    ui.SetBarLabelText("xpRemaining",
-                       string.format(L["%d Remaining"], remainingXP))
 end
 
 local function UpdateLevelText(level)
@@ -636,17 +590,33 @@ local function UpdatePetXpBar()
     end
     currentXP = tonumber(currentXP) or 0
     nextXP = tonumber(nextXP) or 0
+    -- nextXP is 0 at max level. A full bar below that means this level's
+    -- XP is done and the pet has not leveled yet.
+    local xpMaxedForLevel = nextXP > 0 and currentXP >= nextXP
+    local petMaxLevel = nextXP <= 0
     local pct = 0
-    if nextXP > 0 then
+    if petMaxLevel or xpMaxedForLevel then
+        pct = 1
+    elseif nextXP > 0 then
         pct = currentXP / nextXP
         if pct < 0 then pct = 0 end
         if pct > 1 then pct = 1 end
     end
     if ui.SetBarPercent then ui.SetBarPercent("petXp", pct) end
     if ui.SetBarLabelText then
-        local pctInt = math.floor((pct * 100) + 0.5)
-        ui.SetBarLabelText("petXp", string.format(L["%d / %d (%d%%)"], currentXP,
-                                                   nextXP, pctInt))
+        local ok, level = pcall(UnitLevel, "pet")
+        level = ok and tonumber(level) or nil
+        if level and level > 0 and (petMaxLevel or xpMaxedForLevel) then
+            ui.SetBarLabelText("petXp", string.format(L["(Lvl %d)"], level))
+        elseif level and level > 0 then
+            ui.SetBarLabelText("petXp", string.format(L["%d / %d (Lvl %d)"],
+                                                       currentXP, nextXP, level))
+        elseif petMaxLevel or xpMaxedForLevel then
+            ui.SetBarLabelText("petXp", "")
+        else
+            ui.SetBarLabelText("petXp", string.format(L["%d / %d"], currentXP,
+                                                       nextXP))
+        end
     end
 end
 
@@ -1365,37 +1335,24 @@ local function ScanClassicSkills()
         profession = 3,
         secondary = 4
     }
-    local NAME_SORT = {
-        axes = 10,
-        ["two-handed axes"] = 11,
-        bows = 12,
-        guns = 13,
-        maces = 14,
-        ["two-handed maces"] = 15,
-        polearms = 16,
-        swords = 17,
-        ["two-handed swords"] = 18,
-        staves = 19,
-        ["fist weapons"] = 20,
-        daggers = 21,
-        thrown = 22,
-        crossbows = 23,
-        wands = 24,
-        unarmed = 25,
-        defense = 40,
-        defence = 40
-    }
+    local function SkillSortName(name)
+        name = NormalizeSkillName(name)
+        name = name:gsub("two%-%s*handed", "2h")
+        name = name:gsub("two%s+handed", "2h")
+        return (name:gsub("%s+", " "))
+    end
     local function SortSkillList(list)
         table.sort(list, function(a, b)
             local ac = CATEGORY_SORT[a.category] or 50
             local bc = CATEGORY_SORT[b.category] or 50
             if ac ~= bc then return ac < bc end
-            local al = NormalizeSkillName(a.name)
-            local bl = NormalizeSkillName(b.name)
-            local an = NAME_SORT[al] or 100
-            local bn = NAME_SORT[bl] or 100
-            if an ~= bn then return an < bn end
-            return al < bl
+            local an = SkillSortName(a.name)
+            local bn = SkillSortName(b.name)
+            if an == bn then return false end
+            if type(strcmputf8i) == "function" then
+                return strcmputf8i(an, bn) < 0
+            end
+            return an < bn
         end)
     end
 
@@ -1569,7 +1526,6 @@ addonTable.RefreshAllData = function()
     local ui = GetUI()
     if not ui then return end
     UpdateXPFillBar()
-    UpdateXPRemainingBar()
     UpdatePetXpBar()
     UpdateProfessionBars()
     UpdateSkillsFrame()
@@ -1611,6 +1567,112 @@ local function CanUseSavedStringKey(value)
     return ok and usable == true
 end
 
+local layoutReady = false
+
+local function CopyLayoutPoint(src, fallbackPoint, fallbackX, fallbackY)
+    src = type(src) == "table" and src or {}
+    return {
+        point = src.point or fallbackPoint,
+        x = tonumber(src.x) or fallbackX,
+        y = tonumber(src.y) or fallbackY
+    }
+end
+
+local function CharacterLayoutKey()
+    local playerName = UnitName("player")
+    local realmName = GetRealmName and GetRealmName() or ""
+    if not CanUseSavedStringKey(playerName) then return nil end
+    if not CanUseSavedStringKey(realmName) then realmName = "" end
+    return playerName .. " - " .. realmName
+end
+
+local function EnsureLayoutStores()
+    if type(VitalFrameDB) ~= "table" or type(VitalFrameDB.global) ~= "table" then
+        return nil
+    end
+    local account = VitalFrameDB.global.accountLayout
+    if type(account) ~= "table" then
+        account = {}
+        VitalFrameDB.global.accountLayout = account
+    end
+    local shared = VitalFrameDB.profiles and VitalFrameDB.profiles.Default
+    if type(account.frame) ~= "table" then
+        account.frame = CopyLayoutPoint(shared and shared.frame, "CENTER", 0, 0)
+    end
+    if type(account.skillsFrame) ~= "table" then
+        account.skillsFrame = CopyLayoutPoint(shared and shared.skillsFrame,
+                                              "CENTER", 180, 0)
+    end
+    if type(VitalFrameDB.global.characterLayouts) ~= "table" then
+        VitalFrameDB.global.characterLayouts = {}
+    end
+    return account
+end
+
+local function CharacterLayout()
+    local key = CharacterLayoutKey()
+    if not key or not EnsureLayoutStores() then return nil, nil end
+    return VitalFrameDB.global.characterLayouts[key], key
+end
+
+local function ActiveLayout(kind)
+    local account = EnsureLayoutStores()
+    if not account then return nil end
+    local char = CharacterLayout()
+    if char and Compat.ReadFlag(char.useOwn, false) and type(char[kind]) == "table" then
+        return char[kind]
+    end
+    return account[kind]
+end
+
+function addonTable.GetLayoutPoint(kind)
+    local layout = ActiveLayout(kind)
+    if not layout then return nil end
+    return layout.point, layout.x, layout.y
+end
+
+function addonTable.SaveLayoutPoint(kind, point, x, y, force)
+    if not layoutReady and not force then return end
+    local account = EnsureLayoutStores()
+    if not account then return end
+    local char, key = CharacterLayout()
+    local useOwn = char and Compat.ReadFlag(char.useOwn, false)
+    local dest
+    if useOwn then
+        char[kind] = type(char[kind]) == "table" and char[kind] or {}
+        dest = char[kind]
+    else
+        account[kind] = type(account[kind]) == "table" and account[kind] or {}
+        dest = account[kind]
+    end
+    dest.point = point or dest.point
+    dest.x = tonumber(x) or 0
+    dest.y = tonumber(y) or 0
+end
+
+function addonTable.UsesOwnLayout()
+    local char = CharacterLayout()
+    return char and Compat.ReadFlag(char.useOwn, false) or false
+end
+
+function addonTable.SetUsesOwnLayout(enabled)
+    local char, key = CharacterLayout()
+    if not key then return end
+    if not char then
+        char = {}
+        VitalFrameDB.global.characterLayouts[key] = char
+    end
+    if enabled and type(char.frame) ~= "table" then
+        local account = EnsureLayoutStores()
+        char.frame = CopyLayoutPoint(account and account.frame, "CENTER", 0, 0)
+        char.skillsFrame = CopyLayoutPoint(account and account.skillsFrame,
+                                           "CENTER", 180, 0)
+    end
+    char.useOwn = Compat.WriteFlag(enabled == true)
+end
+
+function addonTable.MarkLayoutReady() layoutReady = true end
+
 local function ProfileUsesNumericFlags(profile)
     if type(profile) ~= "table" then return false end
     local streamer = profile.streamerMode
@@ -1650,6 +1712,7 @@ local function InitializeDB()
                                         CopyDefaults(defaults.profile)
     MergeDefaults(VitalFrameDB.profiles.Default, defaults.profile)
     MergeDefaults(VitalFrameDB.global, defaults.global)
+    EnsureLayoutStores()
 
     local playerName = UnitName("player")
     local realmName = GetRealmName and GetRealmName()
@@ -1779,7 +1842,6 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         ui.UpdateEditModeDragState()
         UpdateLevelText(UnitLevel("player"))
         UpdateXPFillBar()
-        UpdateXPRemainingBar()
         UpdatePetXpBar()
         UpdateProfessionBars()
         UpdateSkillsFrame()
@@ -1795,35 +1857,34 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         if not db then InitializeDB() end
         UpdateLevelText(UnitLevel("player"))
         UpdateXPFillBar()
-        UpdateXPRemainingBar()
         UpdatePetXpBar()
         UpdateProfessionBars()
         UpdateSkillsFrame()
         UpdateReputationBar()
+        if ui.ScheduleApplySavedFrameLayout then
+            ui.ScheduleApplySavedFrameLayout()
+        end
         if ui.UpdateNameText then ui.UpdateNameText() end
     elseif event == "UPDATE_EXHAUSTION" then
         UpdateXPFillBar()
-        UpdateXPRemainingBar()
     elseif event == "PLAYER_XP_UPDATE" then
         UpdateXPFillBar()
-        UpdateXPRemainingBar()
         UpdateLevelText(UnitLevel("player"))
     elseif event == "PLAYER_LEVEL_UP" then
         local newLevel = ...
         UpdateXPFillBar()
-        UpdateXPRemainingBar()
         UpdateLevelText(newLevel or UnitLevel("player"))
     elseif event == "PLAYER_MAX_LEVEL_UPDATE" or event == "ENABLE_XP_GAIN" or
         event == "DISABLE_XP_GAIN" or event == "UPDATE_EXPANSION_LEVEL" then
         UpdateXPFillBar()
-        UpdateXPRemainingBar()
         UpdateLevelText(UnitLevel("player"))
     elseif event == "UNIT_LEVEL" then
         local unit = ...
         if unit == "player" then
             UpdateXPFillBar()
-            UpdateXPRemainingBar()
             UpdateLevelText(UnitLevel("player"))
+        elseif unit == "pet" then
+            UpdatePetXpBar()
         end
     elseif event == "FACTION_STANDING_CHANGED" then
         local factionID = ...

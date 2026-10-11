@@ -12,7 +12,7 @@ local layoutFocus = nil
 local SetLayoutFocus
 local vitalFrameSettingsPanel
 local suppressNextFocusClear = false
-local BAR_ORDER = {"xpFill", "petXp", "xpRemaining", "reputation"}
+local BAR_ORDER = {"xpFill", "petXp", "reputation"}
 
 local layoutUnlocked = false
 
@@ -34,9 +34,7 @@ end
 local function GetSettingsBarOrder()
     local keys = {}
     for _, key in ipairs(BAR_ORDER) do
-        if key == "xpRemaining" then
-            -- XP Remaining is created as a subset of the XP checkbox.
-        elseif key ~= "petXp" or SupportsPetXpLeveling() then
+        if key ~= "petXp" or SupportsPetXpLeveling() then
             keys[#keys + 1] = key
         end
     end
@@ -47,14 +45,13 @@ local runtimeHiddenBars = {}
 local BAR_DEFS = {
     xpFill = {label = L["XP"], color = {0.34, 0.69, 0.17}},
     petXp = {label = L["Pet XP"], color = {0.46, 0, 0.68}},
-    xpRemaining = {label = L["XP Remaining"], color = {1, 0.82, 0}},
     reputation = {label = L["Reputation"], color = {0.10, 0.70, 0.30}}
 }
 
 local FIXED_BAR_HEIGHT = 30
 local PET_BAR_HEIGHT = math.floor(FIXED_BAR_HEIGHT * 2 / 3)
 local XP_BAR_HEIGHT = math.floor((FIXED_BAR_HEIGHT + PET_BAR_HEIGHT) / 2)
-local XP_BAR_KEYS = {xpFill = true, xpRemaining = true, reputation = true}
+local XP_BAR_KEYS = {xpFill = true, reputation = true}
 
 local DEFAULT_FRAME_WIDTH = 200
 local DEFAULT_FRAME_HEIGHT = 200
@@ -949,34 +946,28 @@ end
 local function AllowClientFramePosition(frame)
     frame = frame or vitalFrameFrame
     if not frame then return end
+    -- The client drops a named frame's position when the addon is disabled.
+    -- SavedVariables own the position, so the client must not keep a copy.
     if frame.SetDontSavePosition then
-        pcall(frame.SetDontSavePosition, frame, false)
+        pcall(frame.SetDontSavePosition, frame, true)
     end
-    if frame.SetUserPlaced then pcall(frame.SetUserPlaced, frame, true) end
 end
 
 local function SaveFramePositionFromOffsets(x, y)
-    local db = GetDB()
-    if not db or not db.profile or not db.profile.frame then return end
-    db.profile.frame.point = "TOPLEFT"
-    db.profile.frame.x = tonumber(x) or 0
-    db.profile.frame.y = tonumber(y) or 0
+    if addonTable.SaveLayoutPoint then
+        addonTable.SaveLayoutPoint("frame", "TOPLEFT", x, y)
+    end
 end
 
 local function SaveFramePosition()
-    local db = GetDB()
-    if not db or not db.profile or not db.profile.frame or not vitalFrameFrame then
-        return
-    end
+    if not vitalFrameFrame or not addonTable.SaveLayoutPoint then return end
 
     local ok, point, x, y = pcall(function()
         local p, _, _, px, py = vitalFrameFrame:GetPoint(1)
         return p, tonumber(px), tonumber(py)
     end)
     if ok and x and y then
-        db.profile.frame.point = point or "TOPLEFT"
-        db.profile.frame.x = x
-        db.profile.frame.y = y
+        addonTable.SaveLayoutPoint("frame", point or "TOPLEFT", x, y)
         return
     end
 
@@ -1955,7 +1946,17 @@ local function ApplySavedFrameLayout()
                                   FRAME_MAX_HEIGHT) or DEFAULT_FRAME_HEIGHT
 
     vitalFrameFrame:SetSize(width, height)
+    local point, x, y = "CENTER", 0, 0
+    if addonTable.GetLayoutPoint then
+        local savedPoint, savedX, savedY = addonTable.GetLayoutPoint("frame")
+        if savedPoint then
+            point, x, y = savedPoint, tonumber(savedX) or 0, tonumber(savedY) or 0
+        end
+    end
+    vitalFrameFrame:ClearAllPoints()
+    vitalFrameFrame:SetPoint(point, UIParent, point, x, y)
     AllowClientFramePosition(vitalFrameFrame)
+    if addonTable.MarkLayoutReady then addonTable.MarkLayoutReady() end
     UpdateProgressBarLayout()
     if UI.ApplySavedSkillsFrameLayout then UI.ApplySavedSkillsFrameLayout() end
 end
@@ -1964,8 +1965,17 @@ local function ApplySavedSettings()
     local db = GetDB()
     if not db or not db.profile then return end
 
-    ApplySavedFrameLayout()
+    if UI.ScheduleApplySavedFrameLayout then
+        UI.ScheduleApplySavedFrameLayout()
+    else
+        ApplySavedFrameLayout()
+    end
     ApplyFrameTheme()
+
+    if vitalFrameSettingsPanel and vitalFrameSettingsPanel.characterPositionCheck then
+        vitalFrameSettingsPanel.characterPositionCheck:SetChecked(
+            addonTable.UsesOwnLayout and addonTable.UsesOwnLayout())
+    end
 
     streamerModeActive = ReadFlag(db.profile.streamerMode, false)
     ApplyStreamerUnitNames()
@@ -2011,7 +2021,12 @@ local function ResetToDefaults()
     vitalFrameFrame:SetPoint("CENTER")
     ApplyFrameSize(200, 200)
     AllowClientFramePosition(vitalFrameFrame)
+    if addonTable.SaveLayoutPoint then
+        addonTable.SaveLayoutPoint("frame", "CENTER", 0, 0, true)
+        addonTable.SaveLayoutPoint("skillsFrame", "CENTER", 180, 0, true)
+    end
     SaveFramePosition()
+    if UI.ApplySavedSkillsFrameLayout then UI.ApplySavedSkillsFrameLayout() end
     if vitalFrameSettingsPanel and vitalFrameSettingsPanel.widthValueText then
         vitalFrameSettingsPanel.widthValueText:SetText("200")
     end
@@ -2304,25 +2319,6 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
                 end
             end)
 
-            local xpRemainingCheck = CreateFrame("CheckButton", nil,
-                                                 settingsPanel,
-                                                 "UICheckButtonTemplate")
-            xpRemainingCheck:SetPoint("TOPLEFT", hideWhenMaxLevelCheck,
-                                      "BOTTOMLEFT", 0, checkGap)
-
-            local xpRemainingLabel = xpRemainingCheck:CreateFontString(nil,
-                                                                       "OVERLAY",
-                                                                       "GameFontHighlight")
-            xpRemainingLabel:SetPoint("LEFT", xpRemainingCheck, "RIGHT", 10, 1)
-            xpRemainingLabel:SetText(L["XP Remaining"])
-
-            xpRemainingCheck:SetChecked(IsBarEnabled("xpRemaining"))
-            settingsPanel.barChecks.xpRemaining = xpRemainingCheck
-            xpRemainingCheck:SetScript("OnClick", function(self)
-                SetBarEnabled("xpRemaining", not IsBarEnabled("xpRemaining"))
-                self:SetChecked(IsBarEnabled("xpRemaining"))
-            end)
-
             check:SetScript("OnClick", function(self)
                 SetBarEnabled("xpFill", not IsBarEnabled("xpFill"))
                 local enabled = IsBarEnabled("xpFill")
@@ -2331,7 +2327,7 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
                 hideWhenMaxLevelCheck:SetEnabled(enabled)
             end)
 
-            prevCheck = xpRemainingCheck
+            prevCheck = hideWhenMaxLevelCheck
             alignAfterXpSubsets = true
         elseif key == "reputation" then
             local autoSwitchCheck = CreateFrame("CheckButton", nil,
@@ -2377,11 +2373,32 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
     optionsLabel:SetJustifyH("LEFT")
     optionsLabel:SetText(L["Options"])
 
+    local characterPositionCheck = CreateFrame("CheckButton", nil, settingsPanel,
+                                               "UICheckButtonTemplate")
+    characterPositionCheck:SetPoint("TOPLEFT", optionsLabel, "BOTTOMLEFT", 10,
+                                    checkGap)
+    local characterPositionLabel = characterPositionCheck:CreateFontString(nil,
+                                                                           "OVERLAY",
+                                                                           "GameFontHighlight")
+    characterPositionLabel:SetPoint("LEFT", characterPositionCheck, "RIGHT", 10,
+                                    1)
+    characterPositionLabel:SetText(L["Use This Character's Position"])
+    characterPositionCheck:SetChecked(addonTable.UsesOwnLayout and
+                                          addonTable.UsesOwnLayout())
+    settingsPanel.characterPositionCheck = characterPositionCheck
+    characterPositionCheck:SetScript("OnClick", function(self)
+        if addonTable.SetUsesOwnLayout then
+            addonTable.SetUsesOwnLayout(self:GetChecked() == true)
+        end
+        self:SetChecked(addonTable.UsesOwnLayout and addonTable.UsesOwnLayout())
+        ApplySavedFrameLayout()
+    end)
+
     local hideBlizzardWatchBarCheck = CreateFrame("CheckButton", nil,
                                                   settingsPanel,
                                                   "UICheckButtonTemplate")
-    hideBlizzardWatchBarCheck:SetPoint("TOPLEFT", optionsLabel, "BOTTOMLEFT",
-                                       10, checkGap)
+    hideBlizzardWatchBarCheck:SetPoint("TOPLEFT", characterPositionCheck,
+                                       "BOTTOMLEFT", 0, checkGap)
 
     local hideBlizzardWatchBarLabel =
         hideBlizzardWatchBarCheck:CreateFontString(nil, "OVERLAY",

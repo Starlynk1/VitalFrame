@@ -1,5 +1,14 @@
 # Vital Frame
 
+## [v1.1.2](https://github.com/Starlynk1/VitalFrame/tree/v1.1.2) (2026-10-10)
+[Full Changelog](https://github.com/Starlynk1/VitalFrame/commits/v1.1.2) [Previous Releases](https://github.com/Starlynk1/VitalFrame/releases)
+
+- The pet bar shows current XP / XP needed and the pet level. When that level is full, or the pet is max level, only the level remains and the bar stays full.
+- Skill names in each section are alphabetical.
+- The XP Remaining bar is removed.
+- Frame positions stay put when the addon is disabled and enabled again. New characters use the account position. A character can keep its own position. Reset to Defaults clears the placement in use.
+- The skills frame can sit flush with the bottom of the screen. Grow Down is available when there is room below, and Grow Up when there is room above. Against the top it grows down. Against the bottom it grows up.
+
 ## [v1.1.1](https://github.com/Starlynk1/VitalFrame/tree/v1.1.1) (2026-09-26)
 [Full Changelog](https://github.com/Starlynk1/VitalFrame/commits/v1.1.1) [Previous Releases](https://github.com/Starlynk1/VitalFrame/releases)
 

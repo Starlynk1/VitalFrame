@@ -2,11 +2,11 @@
 ## Title: Vital Frame
 ## Notes: Stream-friendly name, level, and progress bars
 ## Author: Starlynk
-## Version: 1.1.1
+## Version: 1.1.2
 ## SavedVariables: VitalFrameDB
 ## OptionalDeps: Ace3
 ## X-Category: UnitFrames
-## X-License: MIT
+## X-License: GPLv3
 ## X-Website: https://github.com/Starlynk1/VitalFrame
 ## X-Curse-Project-ID: 1702126
 

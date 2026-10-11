@@ -11,7 +11,8 @@ local SKILLS_MIN_WIDTH, SKILLS_MAX_WIDTH = 120, 400
 local SKILLS_MIN_BAR_HEIGHT, SKILLS_MAX_BAR_HEIGHT = 8, 32
 local SKILLS_BAR_PADDING = 4
 local SKILLS_BAR_GAP = 0
-local SKILLS_SCREEN_INSET = 4
+local SKILLS_SCREEN_INSET = 0
+local SKILLS_EDGE_FLUSH = 1
 local applyingSkillsSize = false
 local SKILLS_BORDER_COLOR = {0.83, 0.66, 0.27, 1}
 local SKILLS_TRAIN_MARK_COLOR = {0.42, 0.42, 0.42, 0.85}
@@ -36,6 +37,7 @@ local skillsHovered = false
 local ReanchorSkillsFrameForGrow
 local LayoutSkillBars
 local AllowClientFramePosition
+local PersistSkillsPoint
 local SKILLS_FRAME_NAME = "VitalFrameSkills"
 
 local function GetDB()
@@ -112,22 +114,39 @@ local function GetSavedSkillsBarHeight()
     return ClampSkillsBarHeight(settings and settings.barHeight)
 end
 
-local function GetSkillsGrowDirection()
-    if skillsFrame then
-        local ok, bottom, top = pcall(function()
-            return tonumber(skillsFrame:GetBottom()),
-                   tonumber(skillsFrame:GetTop())
-        end)
-        local parentHeight = tonumber(UIParent:GetHeight()) or 0
-        if ok and bottom and top and parentHeight > 0 then
-            local margin = math.max(120, parentHeight * 0.22)
-            if bottom <= margin then return "up" end
-            if (parentHeight - top) <= margin then return "down" end
-        end
+local function SkillsEdgeRoom(bottom, top, parentHeight)
+    if not bottom or not top or not parentHeight or parentHeight <= 0 then
+        return true, true
     end
+    local roomDown = bottom > SKILLS_EDGE_FLUSH
+    local roomUp = (parentHeight - top) > SKILLS_EDGE_FLUSH
+    return roomDown, roomUp
+end
+
+local function SavedGrowDirection()
     local settings = GetSkillsSettings()
     if settings and settings.growDirection == "up" then return "up" end
     return "down"
+end
+
+local function ResolveGrowDirection(roomDown, roomUp)
+    if not roomUp and roomDown then return "down" end
+    if not roomDown and roomUp then return "up" end
+    return SavedGrowDirection()
+end
+
+local function GetSkillsEdgeRoom()
+    if not skillsFrame then return true, true end
+    local ok, bottom, top = pcall(function()
+        return tonumber(skillsFrame:GetBottom()), tonumber(skillsFrame:GetTop())
+    end)
+    if not ok then return true, true end
+    return SkillsEdgeRoom(bottom, top, tonumber(UIParent:GetHeight()) or 0)
+end
+
+local function GetSkillsGrowDirection()
+    local roomDown, roomUp = GetSkillsEdgeRoom()
+    return ResolveGrowDirection(roomDown, roomUp)
 end
 
 local function GetSkillsFrameHeightForCount(count, barHeight)
@@ -206,13 +225,17 @@ local function ClampSkillsFrameToScreen()
     if left + width > parentWidth - SKILLS_SCREEN_INSET then
         left = parentWidth - SKILLS_SCREEN_INSET - width
     end
-    if bottom < SKILLS_SCREEN_INSET then bottom = SKILLS_SCREEN_INSET end
-    if bottom + height > parentHeight - SKILLS_SCREEN_INSET then
-        bottom = parentHeight - SKILLS_SCREEN_INSET - height
+    if bottom < 0 then bottom = 0 end
+    if bottom + height > parentHeight then
+        bottom = parentHeight - height
     end
 
+    local topEdge = bottom + height
+    local roomDown, roomUp = SkillsEdgeRoom(bottom, topEdge, parentHeight)
+    local direction = ResolveGrowDirection(roomDown, roomUp)
     local settings = GetSkillsSettings()
-    local growUp = GetSkillsGrowDirection() == "up"
+    if settings then settings.growDirection = direction end
+    local growUp = direction == "up"
     local scale = tonumber(skillsFrame:GetScale()) or 1
     if skillsFrame.ClearFrameSnap then skillsFrame:ClearFrameSnap() end
     skillsFrame:ClearAllPoints()
@@ -220,20 +243,12 @@ local function ClampSkillsFrameToScreen()
     skillsFrame:SetSize(width, height)
     if growUp then
         skillsFrame:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", left, bottom)
-        if settings then
-            settings.point = "BOTTOMLEFT"
-            settings.x = left
-            settings.y = bottom
-        end
+        PersistSkillsPoint("BOTTOMLEFT", left, bottom)
     else
         local top = bottom + height
         local y = -((parentHeight - top * scale) / scale)
         skillsFrame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", left, y)
-        if settings then
-            settings.point = "TOPLEFT"
-            settings.x = left
-            settings.y = y
-        end
+        PersistSkillsPoint("TOPLEFT", left, y)
     end
     applyingSkillsSize = false
     AllowClientFramePosition()
@@ -252,17 +267,14 @@ local function SaveSkillsBarHeight(barHeight)
 end
 
 local function SaveSkillsPosition()
-    local settings = GetSkillsSettings()
-    if not settings or not skillsFrame then return end
+    if not skillsFrame then return end
 
     local ok, point, x, y = pcall(function()
         local p, _, _, px, py = skillsFrame:GetPoint(1)
         return p, tonumber(px), tonumber(py)
     end)
     if ok and x and y then
-        settings.point = point or "CENTER"
-        settings.x = x
-        settings.y = y
+        PersistSkillsPoint(point or "CENTER", x, y)
         return
     end
 
@@ -274,11 +286,7 @@ local function SaveSkillsPosition()
         if not left or not top then return nil end
         return left, -((parentHeight - top * scale) / scale)
     end)
-    if ok and x and y then
-        settings.point = "TOPLEFT"
-        settings.x = x
-        settings.y = y
-    end
+    if ok and x and y then PersistSkillsPoint("TOPLEFT", x, y) end
 end
 
 AllowClientFramePosition = function(frame)
@@ -289,9 +297,14 @@ AllowClientFramePosition = function(frame)
         return
     end
     if frame.SetDontSavePosition then
-        pcall(frame.SetDontSavePosition, frame, false)
+        pcall(frame.SetDontSavePosition, frame, true)
     end
-    if frame.SetUserPlaced then pcall(frame.SetUserPlaced, frame, true) end
+end
+
+PersistSkillsPoint = function(point, x, y, force)
+    if addonTable.SaveLayoutPoint then
+        addonTable.SaveLayoutPoint("skillsFrame", point, x, y, force)
+    end
 end
 
 local function BakeSkillsFrameToUIParent(deltaX, deltaY)
@@ -312,12 +325,7 @@ local function BakeSkillsFrameToUIParent(deltaX, deltaY)
     skillsFrame:ClearAllPoints()
     skillsFrame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", offsetX, offsetY)
     AllowClientFramePosition()
-    local settings = GetSkillsSettings()
-    if settings then
-        settings.point = "TOPLEFT"
-        settings.x = offsetX
-        settings.y = offsetY
-    end
+    PersistSkillsPoint("TOPLEFT", offsetX, offsetY)
     ReanchorSkillsFrameForGrow()
 end
 
@@ -330,7 +338,6 @@ function ReanchorSkillsFrameForGrow()
     end)
     if not ok or not left then return end
 
-    local settings = GetSkillsSettings()
     local growUp = GetSkillsGrowDirection() == "up"
     local parentHeight = tonumber(UIParent:GetHeight()) or 0
     local scale = tonumber(skillsFrame:GetScale()) or 1
@@ -338,19 +345,11 @@ function ReanchorSkillsFrameForGrow()
     skillsFrame:ClearAllPoints()
     if growUp and bottom then
         skillsFrame:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", left, bottom)
-        if settings then
-            settings.point = "BOTTOMLEFT"
-            settings.x = left
-            settings.y = bottom
-        end
+        PersistSkillsPoint("BOTTOMLEFT", left, bottom)
     elseif top then
         local y = -((parentHeight - top * scale) / scale)
         skillsFrame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", left, y)
-        if settings then
-            settings.point = "TOPLEFT"
-            settings.x = left
-            settings.y = y
-        end
+        PersistSkillsPoint("TOPLEFT", left, y)
     end
     AllowClientFramePosition()
     ClampSkillsFrameToScreen()
@@ -648,13 +647,12 @@ local function ApplySkillsBarHeight(barHeight)
 end
 
 local function ApplySkillsGrowDirection(direction)
+    local roomDown, roomUp = GetSkillsEdgeRoom()
+    if direction == "up" and not roomUp then return end
+    if direction ~= "up" and not roomDown then return end
     local settings = GetSkillsSettings()
     if settings then
-        if direction == "up" then
-            settings.growDirection = "up"
-        else
-            settings.growDirection = "down"
-        end
+        settings.growDirection = direction == "up" and "up" or "down"
     end
     ReanchorSkillsFrameForGrow()
     LayoutSkillBars()
@@ -694,6 +692,17 @@ local function UpdateSkillSelectList()
         if grouped[skill.category] then
             grouped[skill.category][#grouped[skill.category] + 1] = skill
         end
+    end
+    for _, skills in pairs(grouped) do
+        table.sort(skills, function(a, b)
+            local an = DisplaySkillName(a.name) or ""
+            local bn = DisplaySkillName(b.name) or ""
+            if an == bn then return false end
+            if type(strcmputf8i) == "function" then
+                return strcmputf8i(an, bn) < 0
+            end
+            return string.lower(an) < string.lower(bn)
+        end)
     end
 
     local y = 0
@@ -795,13 +804,32 @@ local function RefreshSkillsSettings()
         skillsSettingsWidgets.WeaponEquippedCheck:SetChecked(
             settings.weaponMode == "equipped")
     end
+    local roomDown, roomUp = GetSkillsEdgeRoom()
+    local growDirection = GetSkillsGrowDirection()
+    if settings.growDirection ~= growDirection then
+        settings.growDirection = growDirection
+    end
     if skillsSettingsWidgets.GrowDownCheck then
-        skillsSettingsWidgets.GrowDownCheck:SetChecked(
-            settings.growDirection ~= "up")
+        skillsSettingsWidgets.GrowDownCheck:SetChecked(growDirection ~= "up")
+        skillsSettingsWidgets.GrowDownCheck:SetEnabled(roomDown)
+    end
+    if skillsSettingsWidgets.GrowDownLabel then
+        if roomDown then
+            skillsSettingsWidgets.GrowDownLabel:SetTextColor(1, 1, 1)
+        else
+            skillsSettingsWidgets.GrowDownLabel:SetTextColor(0.5, 0.5, 0.5)
+        end
     end
     if skillsSettingsWidgets.GrowUpCheck then
-        skillsSettingsWidgets.GrowUpCheck:SetChecked(
-            settings.growDirection == "up")
+        skillsSettingsWidgets.GrowUpCheck:SetChecked(growDirection == "up")
+        skillsSettingsWidgets.GrowUpCheck:SetEnabled(roomUp)
+    end
+    if skillsSettingsWidgets.GrowUpLabel then
+        if roomUp then
+            skillsSettingsWidgets.GrowUpLabel:SetTextColor(1, 1, 1)
+        else
+            skillsSettingsWidgets.GrowUpLabel:SetTextColor(0.5, 0.5, 0.5)
+        end
     end
     if skillsSettingsWidgets.WidthSlider then
         skillsSettingsWidgets.WidthSlider:SetValue(width)
@@ -854,7 +882,9 @@ local function FinishSkillsDrag(frame)
         EditModeMagnetismManager:ApplyMagnetism(frame)
     end
     AllowClientFramePosition()
-    SaveSkillsPosition()
+    ClampSkillsFrameToScreen()
+    LayoutSkillBars()
+    RefreshSkillsSettings()
 end
 
 local function SetSkillsSelectionVisual(isSelected)
@@ -1119,6 +1149,7 @@ local function CreateSkillsSettingsPanel()
                                                          "GameFontHighlight")
     growDownLabel:SetPoint("LEFT", growDownCheck, "RIGHT", 10, 1)
     growDownLabel:SetText(L["Grow Down"])
+    skillsSettingsWidgets.GrowDownLabel = growDownLabel
     growDownCheck:SetScript("OnClick", function()
         ApplySkillsGrowDirection("down")
         RefreshSkillsSettings()
@@ -1131,6 +1162,7 @@ local function CreateSkillsSettingsPanel()
                                                      "GameFontHighlight")
     growUpLabel:SetPoint("LEFT", growUpCheck, "RIGHT", 10, 1)
     growUpLabel:SetText(L["Grow Up"])
+    skillsSettingsWidgets.GrowUpLabel = growUpLabel
     growUpCheck:SetScript("OnClick", function()
         ApplySkillsGrowDirection("up")
         RefreshSkillsSettings()
@@ -1280,7 +1312,7 @@ function UI.CreateSkillsFrame()
     frame:SetMovable(true)
     frame:EnableMouse(false)
     frame:RegisterForDrag("LeftButton")
-    frame:SetClampedToScreen(true)
+    frame:SetClampedToScreen(false)
     frame:SetFrameStrata("LOW")
     frame:SetFrameLevel(2)
     frame:SetBackdrop({
@@ -1404,11 +1436,24 @@ function UI.ApplySavedSkillsFrameLayout()
     local width = GetSavedSkillsWidth()
     local height = GetSkillsFrameHeightForCount(#visibleSkills,
                                                GetSavedSkillsBarHeight())
+    local point, x, y = "CENTER", 180, 0
+    if addonTable.GetLayoutPoint then
+        local savedPoint, savedX, savedY = addonTable.GetLayoutPoint("skillsFrame")
+        if savedPoint then
+            point = savedPoint
+            x = tonumber(savedX) or 0
+            y = tonumber(savedY) or 0
+        end
+    end
+    skillsFrame:ClearAllPoints()
+    skillsFrame:SetPoint(point, UIParent, point, x, y)
     AllowClientFramePosition()
     applyingSkillsSize = true
     skillsFrame:SetSize(width, height)
     applyingSkillsSize = false
+    ReanchorSkillsFrameForGrow()
     LayoutSkillBars()
+    RefreshSkillsSettings()
 end
 
 function UI.ResetSkillsFrame()
@@ -1416,9 +1461,6 @@ function UI.ResetSkillsFrame()
     local settings = GetSkillsSettings()
     local width = DEFAULT_SKILLS_WIDTH
     if settings then
-        settings.point = "CENTER"
-        settings.x = 180
-        settings.y = 0
         settings.width = width
         settings.barHeight = DEFAULT_SKILLS_BAR_HEIGHT
         settings.growDirection = "down"
@@ -1434,6 +1476,7 @@ function UI.ResetSkillsFrame()
     end
     skillsFrame:ClearAllPoints()
     skillsFrame:SetPoint("CENTER", UIParent, "CENTER", 180, 0)
+    PersistSkillsPoint("CENTER", 180, 0, true)
     AllowClientFramePosition()
     ApplySkillsFrameWidth(width)
     ApplySkillsBarHeight(DEFAULT_SKILLS_BAR_HEIGHT)

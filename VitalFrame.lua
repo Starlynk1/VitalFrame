@@ -15,7 +15,9 @@ local defaults = {
             width = 200,
             height = 200,
             shown = true,
+            scale = 1,
             frameOpacity = 100,
+            backgroundOpacity = 100,
             contentOpacity = 100
         },
         fonts = {
@@ -54,7 +56,9 @@ local defaults = {
             selected = {},
             barFont = "frizqt",
             barFontSize = 12,
+            scale = 1,
             frameOpacity = 100,
+            backgroundOpacity = 100,
             contentOpacity = 100
         }
     },
@@ -559,8 +563,6 @@ end
 
 local function CanShowPetXpBar()
     if not SupportsPetXpLeveling() then return false end
-    local _, classTag = UnitClass("player")
-    if classTag ~= "HUNTER" then return false end
     local ok, exists = pcall(function() return UnitExists("pet") == true end)
     return ok and exists == true
 end
@@ -590,12 +592,20 @@ local function UpdatePetXpBar()
     end
     currentXP = tonumber(currentXP) or 0
     nextXP = tonumber(nextXP) or 0
+    local petLevel = SafeNumber(UnitLevel, "pet")
+    local playerLevel = SafeNumber(UnitLevel, "player")
     -- nextXP is 0 at max level. A full bar below that means this level's
-    -- XP is done and the pet has not leveled yet.
+    -- XP is done and the pet has not leveled yet. A pet at the
+    -- character's level does not gain XP until the character levels, so
+    -- the bar stays full and shows only the level even when this level's
+    -- XP is not full. That applies to every class with a leveling pet.
     local xpMaxedForLevel = nextXP > 0 and currentXP >= nextXP
     local petMaxLevel = nextXP <= 0
+    local levelCapped = petLevel and playerLevel and petLevel > 0 and
+                            petLevel >= playerLevel
+    local showLevelOnly = petMaxLevel or xpMaxedForLevel or levelCapped
     local pct = 0
-    if petMaxLevel or xpMaxedForLevel then
+    if showLevelOnly then
         pct = 1
     elseif nextXP > 0 then
         pct = currentXP / nextXP
@@ -604,14 +614,13 @@ local function UpdatePetXpBar()
     end
     if ui.SetBarPercent then ui.SetBarPercent("petXp", pct) end
     if ui.SetBarLabelText then
-        local ok, level = pcall(UnitLevel, "pet")
-        level = ok and tonumber(level) or nil
-        if level and level > 0 and (petMaxLevel or xpMaxedForLevel) then
-            ui.SetBarLabelText("petXp", string.format(L["(Lvl %d)"], level))
-        elseif level and level > 0 then
+        if petLevel and petLevel > 0 and showLevelOnly then
+            ui.SetBarLabelText("petXp", string.format(L["(Lvl %d)"], petLevel))
+        elseif petLevel and petLevel > 0 then
             ui.SetBarLabelText("petXp", string.format(L["%d / %d (Lvl %d)"],
-                                                       currentXP, nextXP, level))
-        elseif petMaxLevel or xpMaxedForLevel then
+                                                       currentXP, nextXP,
+                                                       petLevel))
+        elseif showLevelOnly then
             ui.SetBarLabelText("petXp", "")
         else
             ui.SetBarLabelText("petXp", string.format(L["%d / %d"], currentXP,
@@ -790,6 +799,25 @@ for _, skill in ipairs(WEAPON_SKILL_IDS) do
     WEAPON_SKILL_BY_ID[skill.id] = skill
 end
 
+-- Ranked class skills. Talent trees (Feral, Balance, Restoration) stay blocked.
+local CLASS_SKILL_IDS = {
+    {id = 134, name = "Feral Combat", capLikeWeapon = true},
+    {id = 40, name = "Poisons"},
+    {id = 633, name = "Lockpicking"}
+}
+
+local CLASS_SKILL_BY_ID = {}
+local CLASS_SKILL_NAMES = {}
+for _, skill in ipairs(CLASS_SKILL_IDS) do
+    CLASS_SKILL_BY_ID[skill.id] = skill
+    CLASS_SKILL_NAMES[string.lower(skill.name)] = true
+end
+
+local function IsClassSkillName(name)
+    if not name or name == "" then return false end
+    return CLASS_SKILL_NAMES[NormalizeSkillName(name)] == true
+end
+
 local WEAPON_SUBCLASS_TO_SKILL = {
     [0] = "Axes",
     [1] = "Two-Handed Axes",
@@ -956,6 +984,86 @@ local function CallSkillInfo(fn, ...)
     return ValuesToSkillInfo(a, b, c, d, e, f, g)
 end
 
+local function SkillRankStrength(rank, maxRank)
+    rank = tonumber(rank) or 0
+    maxRank = tonumber(maxRank) or 0
+    if maxRank <= 1 and rank <= 1 then return 0 end
+    return maxRank * 100000 + rank
+end
+
+local function ReadSkillLineAt(index)
+    local readers = {}
+    if C_SkillInfo and type(C_SkillInfo.GetSkillLineInfo) == "function" then
+        readers[#readers + 1] = C_SkillInfo.GetSkillLineInfo
+    end
+    if type(GetSkillLineInfo) == "function" and
+        GetSkillLineInfo ~= (C_SkillInfo and C_SkillInfo.GetSkillLineInfo) then
+        readers[#readers + 1] = GetSkillLineInfo
+    end
+
+    local best = nil
+    local bestStrength = -1
+    for _, reader in ipairs(readers) do
+        local ok, a, b, c, d, e, f, g, h = pcall(reader, index)
+        if ok and a ~= nil then
+            local info = nil
+            if type(a) == "table" then
+                info = ValuesToSkillInfo(a)
+                if info then
+                    info.isHeader = a.isHeader == true or a.isHeader == 1
+                    info.isExpanded = a.isCollapsed ~= true and a.isCollapsed ~= 1
+                    local modifier = tonumber(a.modifier) or 0
+                    info.rank = (tonumber(info.rank) or 0) + modifier
+                end
+            elseif type(a) == "string" then
+                local modifier = tonumber(f) or 0
+                info = {
+                    name = a,
+                    isHeader = b == true or b == 1,
+                    isExpanded = c == true or c == 1,
+                    rank = (tonumber(d) or 0) + modifier,
+                    maxRank = tonumber(g) or 0,
+                    isAbandonable = h == true or h == 1
+                }
+            elseif type(a) == "number" and type(b) == "string" then
+                local modifier = tonumber(g) or 0
+                info = {
+                    skillLineID = a,
+                    name = b,
+                    isHeader = c == true or c == 1,
+                    isExpanded = d ~= true and d ~= 1,
+                    rank = (tonumber(e) or 0) + modifier,
+                    maxRank = tonumber(h) or 0
+                }
+            end
+            if info then
+                local strength = SkillRankStrength(info.rank, info.maxRank)
+                if info.isHeader then strength = 0 end
+                if strength > bestStrength then
+                    best = info
+                    bestStrength = strength
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function SkillLineCount()
+    local count = 0
+    if C_SkillInfo and type(C_SkillInfo.GetNumSkillLines) == "function" then
+        local ok, num = pcall(C_SkillInfo.GetNumSkillLines)
+        num = ok and tonumber(num) or 0
+        if num > count then count = num end
+    end
+    if type(GetNumSkillLines) == "function" then
+        local ok, num = pcall(GetNumSkillLines)
+        num = ok and tonumber(num) or 0
+        if num > count then count = num end
+    end
+    return count
+end
+
 local PROFESSION_SKILL_IDS = {
     [164] = "profession",
     [165] = "profession",
@@ -980,10 +1088,12 @@ local function CategoryForSkillLine(skillLineID, name)
     if skillLineID and WEAPON_SKILL_BY_ID[skillLineID] then
         return WEAPON_SKILL_BY_ID[skillLineID].category or "weapon"
     end
+    if skillLineID and CLASS_SKILL_BY_ID[skillLineID] then return "class" end
     if skillLineID and PROFESSION_SKILL_IDS[skillLineID] then
         return PROFESSION_SKILL_IDS[skillLineID]
     end
     if name and IsStatSkillName(name) then return "stat" end
+    if name and IsClassSkillName(name) then return "class" end
     if name and IsSecondarySkillName(name) then return "secondary" end
     return nil
 end
@@ -1296,10 +1406,20 @@ local function ScanClassicSkills()
         end
         local key = skillCategory == "weapon" and CanonicalWeaponSkillName(name) or
                         NormalizeSkillName(name)
+        local incoming = SkillRankStrength(rank, maxRank)
         for _, existing in ipairs(catalog) do
-            if existing.name == name then return end
+            local same = existing.name == name or
+                             NormalizeSkillName(existing.name) == key
             if skillCategory == "weapon" and existing.category == "weapon" and
                 CanonicalWeaponSkillName(existing.name) == key then
+                same = true
+            end
+            if same then
+                if incoming > SkillRankStrength(existing.rank, existing.maxRank) then
+                    existing.rank = tonumber(rank) or 0
+                    existing.maxRank = tonumber(maxRank) or 0
+                    if skillCategory then existing.category = skillCategory end
+                end
                 return
             end
         end
@@ -1332,8 +1452,9 @@ local function ScanClassicSkills()
     local CATEGORY_SORT = {
         weapon = 1,
         stat = 2,
-        profession = 3,
-        secondary = 4
+        class = 3,
+        profession = 4,
+        secondary = 5
     }
     local function SkillSortName(name)
         name = NormalizeSkillName(name)
@@ -1407,31 +1528,57 @@ local function ScanClassicSkills()
         end
     end
 
-    local hasSkillLines = false
-    pcall(function()
-        hasSkillLines = GetNumSkillLines ~= nil and GetSkillLineInfo ~= nil
-    end)
+    for _, skill in ipairs(CLASS_SKILL_IDS) do
+        local info = nil
+        if C_SkillInfo and type(C_SkillInfo.GetSkillLineInfoByID) == "function" then
+            local ok, line = pcall(C_SkillInfo.GetSkillLineInfoByID, skill.id)
+            if ok then info = type(line) == "table" and ValuesToSkillInfo(line) or
+                               nil end
+        end
+        local rank = info and info.rank
+        local maxRank = info and info.maxRank
+        local apiName = info and info.name
+        if rank == nil and maxRank == nil then
+            rank, maxRank, apiName = GetSkillRankByID(skill.id)
+        end
+        local name = apiName
+        if not name or name == "" or not IsClassSkillName(name) then
+            name = skill.name
+        end
+        local maxValue = tonumber(maxRank)
+        local rankValue = tonumber(rank) or 0
+        if skill.capLikeWeapon and (not maxValue or maxValue <= 1) and
+            rankValue > 1 then
+            maxValue = GetDefaultWeaponSkillCap()
+        end
+        if rankValue > 0 and maxValue and maxValue > 1 then
+            AddSkill(name, rankValue, maxValue, "class")
+        end
+    end
 
-    if hasSkillLines then
-        if ExpandSkillHeader then pcall(ExpandSkillHeader, 0) end
-        local numLines = GetNumSkillLines() or 0
+    local numLines = SkillLineCount()
+    if numLines > 0 then
+        local expandHeader = (C_SkillInfo and C_SkillInfo.ExpandSkillHeader) or
+                                 ExpandSkillHeader
+        if expandHeader then pcall(expandHeader, 0) end
+        numLines = SkillLineCount()
         for i = 1, numLines do
-            local ok, header = pcall(function()
-                local name, isHeader, isExpanded = GetSkillLineInfo(i)
-                if isHeader and not isExpanded and ExpandSkillHeader then
-                    ExpandSkillHeader(i)
-                end
-                return isHeader
-            end)
-            if ok and header then numLines = GetNumSkillLines() or numLines end
+            local info = ReadSkillLineAt(i)
+            if info and info.isHeader and not info.isExpanded and expandHeader then
+                pcall(expandHeader, i)
+            end
         end
 
         local category = nil
-        numLines = GetNumSkillLines() or 0
+        numLines = SkillLineCount()
         for i = 1, numLines do
-            local ok, name, isHeader, _, rank, _, _, maxRank, isAbandonable =
-                pcall(GetSkillLineInfo, i)
-            if ok then
+            local info = ReadSkillLineAt(i)
+            if info then
+                local name = info.name
+                local isHeader = info.isHeader
+                local rank = info.rank
+                local maxRank = info.maxRank
+                local isAbandonable = info.isAbandonable
                 if isHeader then
                     local headerCategory = nil
                     pcall(function()
@@ -1448,7 +1595,9 @@ local function ScanClassicSkills()
                     pcall(function()
                         weaponName = IsWeaponSkillName(name)
                     end)
-                    if skillCategory == "skip" or IsBlockedSkillName(name) then
+                    if IsClassSkillName(name) then
+                        skillCategory = "class"
+                    elseif skillCategory == "skip" or IsBlockedSkillName(name) then
                         skillCategory = nil
                     elseif skillCategory == "profession" and secondaryName then
                         skillCategory = "secondary"
@@ -1874,6 +2023,7 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         local newLevel = ...
         UpdateXPFillBar()
         UpdateLevelText(newLevel or UnitLevel("player"))
+        UpdatePetXpBar()
     elseif event == "PLAYER_MAX_LEVEL_UPDATE" or event == "ENABLE_XP_GAIN" or
         event == "DISABLE_XP_GAIN" or event == "UPDATE_EXPANSION_LEVEL" then
         UpdateXPFillBar()
@@ -1883,6 +2033,7 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         if unit == "player" then
             UpdateXPFillBar()
             UpdateLevelText(UnitLevel("player"))
+            UpdatePetXpBar()
         elseif unit == "pet" then
             UpdatePetXpBar()
         end
@@ -1917,13 +2068,21 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
 end)
 
 if EventRegistry then
-    EventRegistry:RegisterCallback("EditMode.Enter", function()
-        local ui = GetUI()
-        if ui then ui.UpdateEditModeDragState() end
-    end)
+    -- These fire inside Edit Mode's OnShow and OnHide. Doing work there
+    -- taints the rest of that call, and Forever then fails ClearTarget()
+    -- while resetting target and focus on the way out.
+    local function AfterEditModeEvent()
+        if Compat.After then
+            Compat.After(0, function()
+                local ui = GetUI()
+                if ui then ui.UpdateEditModeDragState() end
+            end)
+        else
+            local ui = GetUI()
+            if ui then ui.UpdateEditModeDragState() end
+        end
+    end
 
-    EventRegistry:RegisterCallback("EditMode.Exit", function()
-        local ui = GetUI()
-        if ui then ui.UpdateEditModeDragState() end
-    end)
+    EventRegistry:RegisterCallback("EditMode.Enter", AfterEditModeEvent)
+    EventRegistry:RegisterCallback("EditMode.Exit", AfterEditModeEvent)
 end

@@ -8,10 +8,11 @@ Vital Frame is a compact, movable HUD for name, level, XP, reputation, professio
 
 *   Name, class icon, and level on a small frame
 *   XP, reputation, and crafting skill bars
-*   Optional hunter pet XP on Classic clients
+*   Optional pet XP on Classic clients
 *   Streamer Mode (shows class name instead of character name)
 *   Hide the default Blizzard watch bar
 *   Separate Skills frame on Classic/Forever (professions, secondary skills, weapon skills)
+*   Scale the main frame and the Skills frame separately
 *   Edit Mode on Retail; `/vf config` to unlock layout on Classic
 *   Theme: Auto (silver on Classic/Retail, brown on Forever), or lock Classic / Forever
 

@@ -14,6 +14,7 @@ local SKILLS_BAR_GAP = 0
 local SKILLS_SCREEN_INSET = 0
 local SKILLS_EDGE_FLUSH = 1
 local applyingSkillsSize = false
+local ClampSkillsFrameToScreen
 local SKILLS_BORDER_COLOR = {0.83, 0.66, 0.27, 1}
 local SKILLS_TRAIN_MARK_COLOR = {0.42, 0.42, 0.42, 0.85}
 
@@ -21,7 +22,8 @@ local CATEGORY_COLORS = {
     profession = {0.85, 0.55, 0.20, 1},
     secondary = {0.55, 0.72, 0.35, 1},
     weapon = {0.55, 0.62, 0.72, 1},
-    stat = {0.68, 0.58, 0.72, 1}
+    stat = {0.68, 0.58, 0.72, 1},
+    class = {0.36, 0.62, 0.48, 1}
 }
 
 local skillsFrame
@@ -114,8 +116,29 @@ local function GetSavedSkillsBarHeight()
     return ClampSkillsBarHeight(settings and settings.barHeight)
 end
 
+local function GetSavedSkillsScale()
+    local settings = GetSkillsSettings()
+    if UI.ClampFrameScale then
+        return UI.ClampFrameScale(settings and settings.scale)
+    end
+    return tonumber(settings and settings.scale) or 1
+end
+
+local function ApplySkillsScale(scale)
+    if UI.ClampFrameScale then scale = UI.ClampFrameScale(scale) end
+    scale = tonumber(scale) or 1
+    local settings = GetSkillsSettings()
+    if settings then settings.scale = scale end
+    if not skillsFrame or not UI.ScaleAroundCenter then
+        if skillsFrame then skillsFrame:SetScale(scale) end
+        return
+    end
+    local point, x, y = UI.ScaleAroundCenter(skillsFrame, scale)
+    if point and PersistSkillsPoint then PersistSkillsPoint(point, x, y) end
+end
+
 local function SkillsEdgeRoom(bottom, top, parentHeight)
-    if not bottom or not top or not parentHeight or parentHeight <= 0 then
+    if bottom == nil or top == nil or not parentHeight or parentHeight <= 0 then
         return true, true
     end
     local roomDown = bottom > SKILLS_EDGE_FLUSH
@@ -135,12 +158,32 @@ local function ResolveGrowDirection(roomDown, roomUp)
     return SavedGrowDirection()
 end
 
+local function SkillsFrameScale()
+    local scale = skillsFrame and tonumber(skillsFrame:GetScale()) or 1
+    if not scale or scale == 0 then return 1 end
+    return scale
+end
+
+local function SkillsParentEdges()
+    if not skillsFrame then return nil end
+    local ok, left, bottom, top = pcall(function()
+        return tonumber(skillsFrame:GetLeft()), tonumber(skillsFrame:GetBottom()),
+               tonumber(skillsFrame:GetTop())
+    end)
+    if not ok or left == nil or bottom == nil or top == nil then return nil end
+    return left, bottom, top
+end
+
+local function SkillsTopLeftY(top)
+    local scale = SkillsFrameScale()
+    local parentHeight = tonumber(UIParent:GetHeight()) or 0
+    return -((parentHeight - (top * scale)) / scale)
+end
+
 local function GetSkillsEdgeRoom()
     if not skillsFrame then return true, true end
-    local ok, bottom, top = pcall(function()
-        return tonumber(skillsFrame:GetBottom()), tonumber(skillsFrame:GetTop())
-    end)
-    if not ok then return true, true end
+    local _, bottom, top = SkillsParentEdges()
+    if bottom == nil or top == nil then return true, true end
     return SkillsEdgeRoom(bottom, top, tonumber(UIParent:GetHeight()) or 0)
 end
 
@@ -169,13 +212,8 @@ local function GetSkillsMaxHeightOnScreen()
     if maxHeight < minHeight then maxHeight = minHeight end
     if not skillsFrame then return maxHeight end
 
-    local ok, bottom, top = pcall(function()
-        return tonumber(skillsFrame:GetBottom()),
-               tonumber(skillsFrame:GetTop())
-    end)
-    if not ok or not bottom or not top or parentHeight <= 0 then
-        return maxHeight
-    end
+    local _, bottom, top = SkillsParentEdges()
+    if bottom == nil or top == nil or parentHeight <= 0 then return maxHeight end
 
     local available
     if GetSkillsGrowDirection() == "up" then
@@ -203,7 +241,7 @@ local function FitSkillsBarHeightToScreen(count, barHeight)
     return fitted, GetSkillsFrameHeightForCount(count, fitted)
 end
 
-local function ClampSkillsFrameToScreen()
+ClampSkillsFrameToScreen = function()
     if not skillsFrame then return end
     local parentWidth, parentHeight = GetSkillsParentSize()
     if parentWidth <= 0 or parentHeight <= 0 then return end
@@ -215,11 +253,8 @@ local function ClampSkillsFrameToScreen()
     if maxWidth > 0 and width > maxWidth then width = maxWidth end
     if maxHeight > 0 and height > maxHeight then height = maxHeight end
 
-    local ok, left, bottom = pcall(function()
-        return tonumber(skillsFrame:GetLeft()),
-               tonumber(skillsFrame:GetBottom())
-    end)
-    if not ok or not left or not bottom then return end
+    local left, bottom = SkillsParentEdges()
+    if left == nil or bottom == nil then return end
 
     if left < SKILLS_SCREEN_INSET then left = SKILLS_SCREEN_INSET end
     if left + width > parentWidth - SKILLS_SCREEN_INSET then
@@ -236,7 +271,6 @@ local function ClampSkillsFrameToScreen()
     local settings = GetSkillsSettings()
     if settings then settings.growDirection = direction end
     local growUp = direction == "up"
-    local scale = tonumber(skillsFrame:GetScale()) or 1
     if skillsFrame.ClearFrameSnap then skillsFrame:ClearFrameSnap() end
     skillsFrame:ClearAllPoints()
     applyingSkillsSize = true
@@ -245,8 +279,7 @@ local function ClampSkillsFrameToScreen()
         skillsFrame:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", left, bottom)
         PersistSkillsPoint("BOTTOMLEFT", left, bottom)
     else
-        local top = bottom + height
-        local y = -((parentHeight - top * scale) / scale)
+        local y = SkillsTopLeftY(topEdge)
         skillsFrame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", left, y)
         PersistSkillsPoint("TOPLEFT", left, y)
     end
@@ -273,20 +306,17 @@ local function SaveSkillsPosition()
         local p, _, _, px, py = skillsFrame:GetPoint(1)
         return p, tonumber(px), tonumber(py)
     end)
-    if ok and x and y then
+    if ok and x ~= nil and y ~= nil then
         PersistSkillsPoint(point or "CENTER", x, y)
         return
     end
 
     ok, x, y = pcall(function()
-        local left = tonumber(skillsFrame:GetLeft())
-        local top = tonumber(skillsFrame:GetTop())
-        local parentHeight = tonumber(UIParent:GetHeight()) or 0
-        local scale = tonumber(skillsFrame:GetScale()) or 1
-        if not left or not top then return nil end
-        return left, -((parentHeight - top * scale) / scale)
+        local left, _, top = SkillsParentEdges()
+        if left == nil or top == nil then return nil end
+        return left, SkillsTopLeftY(top)
     end)
-    if ok and x and y then PersistSkillsPoint("TOPLEFT", x, y) end
+    if ok and x ~= nil and y ~= nil then PersistSkillsPoint("TOPLEFT", x, y) end
 end
 
 AllowClientFramePosition = function(frame)
@@ -311,15 +341,11 @@ local function BakeSkillsFrameToUIParent(deltaX, deltaY)
     if not skillsFrame then return end
 
     local ok, offsetX, offsetY = pcall(function()
-        local top = tonumber(skillsFrame:GetTop())
-        local left = tonumber(skillsFrame:GetLeft())
-        local scale = tonumber(skillsFrame:GetScale()) or 1
-        local parentHeight = tonumber(UIParent:GetHeight()) or 0
-        if not top or not left then return nil end
-        return left + (deltaX or 0),
-               -((parentHeight - top * scale) / scale) + (deltaY or 0)
+        local left, _, top = SkillsParentEdges()
+        if left == nil or top == nil then return nil end
+        return left + (deltaX or 0), SkillsTopLeftY(top) + (deltaY or 0)
     end)
-    if not ok or not offsetX then return end
+    if not ok or offsetX == nil then return end
 
     if skillsFrame.ClearFrameSnap then skillsFrame:ClearFrameSnap() end
     skillsFrame:ClearAllPoints()
@@ -331,23 +357,17 @@ end
 
 function ReanchorSkillsFrameForGrow()
     if not skillsFrame then return end
-    local ok, left, bottom, top = pcall(function()
-        return tonumber(skillsFrame:GetLeft()),
-               tonumber(skillsFrame:GetBottom()),
-               tonumber(skillsFrame:GetTop())
-    end)
-    if not ok or not left then return end
+    local left, bottom, top = SkillsParentEdges()
+    if left == nil then return end
 
     local growUp = GetSkillsGrowDirection() == "up"
-    local parentHeight = tonumber(UIParent:GetHeight()) or 0
-    local scale = tonumber(skillsFrame:GetScale()) or 1
     if skillsFrame.ClearFrameSnap then skillsFrame:ClearFrameSnap() end
     skillsFrame:ClearAllPoints()
-    if growUp and bottom then
+    if growUp and bottom ~= nil then
         skillsFrame:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", left, bottom)
         PersistSkillsPoint("BOTTOMLEFT", left, bottom)
-    elseif top then
-        local y = -((parentHeight - top * scale) / scale)
+    elseif top ~= nil then
+        local y = SkillsTopLeftY(top)
         skillsFrame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", left, y)
         PersistSkillsPoint("TOPLEFT", left, y)
     end
@@ -508,10 +528,11 @@ end
 
 local function ApplySkillsChrome()
     if not skillsFrame or not skillsFrame.SetBackdropBorderColor then return end
-    local opacity = GetSkillsPercent("frameOpacity") / 100
-    skillsFrame:SetBackdropColor(0, 0, 0, 0.5 * opacity)
+    skillsFrame:SetAlpha(GetSkillsPercent("frameOpacity") / 100)
+    skillsFrame:SetBackdropColor(0, 0, 0,
+                                 GetSkillsPercent("backgroundOpacity") / 100)
     local r, g, b, a = GetSharedFrameBorderColor()
-    skillsFrame:SetBackdropBorderColor(r, g, b, (a or 1) * opacity)
+    skillsFrame:SetBackdropBorderColor(r, g, b, a or 1)
 end
 
 function LayoutSkillBars()
@@ -843,6 +864,9 @@ local function RefreshSkillsSettings()
     if skillsSettingsWidgets.BarHeightValue then
         skillsSettingsWidgets.BarHeightValue:SetText(tostring(barHeight))
     end
+    if skillsSettingsWidgets.ScaleSlider then
+        skillsSettingsWidgets.ScaleSlider.Refresh()
+    end
     if skillsSettingsWidgets.BarFontButton then
         skillsSettingsWidgets.BarFontButton.Refresh()
     end
@@ -851,6 +875,9 @@ local function RefreshSkillsSettings()
     end
     if skillsSettingsWidgets.FrameOpacitySlider then
         skillsSettingsWidgets.FrameOpacitySlider.Refresh()
+    end
+    if skillsSettingsWidgets.BackgroundOpacitySlider then
+        skillsSettingsWidgets.BackgroundOpacitySlider.Refresh()
     end
     if skillsSettingsWidgets.ContentOpacitySlider then
         skillsSettingsWidgets.ContentOpacitySlider.Refresh()
@@ -882,7 +909,18 @@ local function FinishSkillsDrag(frame)
         EditModeMagnetismManager:ApplyMagnetism(frame)
     end
     AllowClientFramePosition()
-    ClampSkillsFrameToScreen()
+    local left, bottom, top = SkillsParentEdges()
+    local parentWidth, parentHeight = GetSkillsParentSize()
+    local width = tonumber(frame:GetWidth()) or 0
+    local onScreen = left ~= nil and bottom ~= nil and top ~= nil and
+                         left >= SKILLS_SCREEN_INSET and bottom >= 0 and
+                         (left + width) <= (parentWidth - SKILLS_SCREEN_INSET) and
+                         top <= parentHeight
+    if onScreen then
+        SaveSkillsPosition()
+    else
+        ClampSkillsFrameToScreen()
+    end
     LayoutSkillBars()
     RefreshSkillsSettings()
 end
@@ -948,7 +986,7 @@ local function CreateSkillsSettingsPanel()
     if not SupportsClassicSkills() or skillsSettingsBuilt then return end
 
     local settingsPanel = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
-    settingsPanel:SetSize(480, 500)
+    settingsPanel:SetSize(560, 500)
     settingsPanel:SetFrameStrata("DIALOG")
     settingsPanel:SetFrameLevel((skillsFrame and skillsFrame:GetFrameLevel() or
                                     1) + 20)
@@ -1012,15 +1050,15 @@ local function CreateSkillsSettingsPanel()
 
     local leftColumn = CreateFrame("Frame", nil, settingsPanel)
     leftColumn:SetSize(1, 1)
-    leftColumn:SetPoint("TOPLEFT", settingsPanel, "TOPLEFT", 18, -42)
     local rightColumn = CreateFrame("Frame", nil, settingsPanel)
     rightColumn:SetSize(1, 1)
-    rightColumn:SetPoint("TOPLEFT", leftColumn, "TOPRIGHT", 180, 0)
+    rightColumn:SetPoint("TOPLEFT", settingsPanel, "TOPLEFT", 18, -42)
+    leftColumn:SetPoint("TOPLEFT", rightColumn, "TOPRIGHT", 268, 0)
 
     local checkGap = -2
 
     local selectScroll = CreateFrame("ScrollFrame", nil, settingsPanel)
-    selectScroll:SetSize(170, 220)
+    selectScroll:SetSize(230, 220)
     selectScroll:EnableMouseWheel(true)
     local selectChild = CreateFrame("Frame", nil, selectScroll)
     selectChild:SetSize(260, 1)
@@ -1036,7 +1074,7 @@ local function CreateSkillsSettingsPanel()
 
     local weaponLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
                                                        "GameFontHighlightMedium")
-    weaponLabel:SetPoint("TOPLEFT", leftColumn, "TOPLEFT", 0, 0)
+    weaponLabel:SetPoint("TOPLEFT", rightColumn, "TOPLEFT", 0, 0)
     weaponLabel:SetText(L["Weapon Skills"])
 
     local weaponAllCheck = CreateFrame("CheckButton", nil, settingsPanel,
@@ -1073,7 +1111,7 @@ local function CreateSkillsSettingsPanel()
 
     local widthLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
                                                       "GameFontHighlightMedium")
-    widthLabel:SetPoint("TOPLEFT", rightColumn, "TOPLEFT", 0, 0)
+    widthLabel:SetPoint("TOPLEFT", leftColumn, "TOPLEFT", 0, 0)
     widthLabel:SetText(L["Width"])
 
     local widthControl, widthSlider
@@ -1142,9 +1180,21 @@ local function CreateSkillsSettingsPanel()
         end
     end)
 
+    local scaleLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                      "GameFontHighlightMedium")
+    scaleLabel:SetPoint("TOPLEFT", barHeightControl, "BOTTOMLEFT", 0, -12)
+    scaleLabel:SetText(L["Scale"])
+    if UI.CreateScaleSlider then
+        skillsSettingsWidgets.ScaleSlider = UI.CreateScaleSlider(
+                                                "VitalFrameSkillsScaleSlider",
+                                                settingsPanel, scaleLabel,
+                                                GetSavedSkillsScale,
+                                                ApplySkillsScale)
+    end
+
     local growDownCheck = CreateFrame("CheckButton", nil, settingsPanel,
                                       "UICheckButtonTemplate")
-    growDownCheck:SetPoint("TOPLEFT", barHeightControl, "BOTTOMLEFT", 0, -10)
+    growDownCheck:SetPoint("TOPLEFT", selectScroll, "BOTTOMLEFT", 0, -10)
     local growDownLabel = growDownCheck:CreateFontString(nil, "OVERLAY",
                                                          "GameFontHighlight")
     growDownLabel:SetPoint("LEFT", growDownCheck, "RIGHT", 10, 1)
@@ -1170,7 +1220,9 @@ local function CreateSkillsSettingsPanel()
 
     local fontsLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
                                                       "GameFontHighlightMedium")
-    fontsLabel:SetPoint("TOPLEFT", growUpCheck, "BOTTOMLEFT", -10, -12)
+    fontsLabel:SetPoint("TOPLEFT",
+                        skillsSettingsWidgets.ScaleSlider or scaleLabel,
+                        "BOTTOMLEFT", 0, -12)
     fontsLabel:SetJustifyH("LEFT")
     fontsLabel:SetText(L["Fonts"])
 
@@ -1206,7 +1258,9 @@ local function CreateSkillsSettingsPanel()
 
     local opacityLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
                                                         "GameFontHighlightMedium")
-    opacityLabel:SetPoint("TOPLEFT", settingsPanel, "TOPLEFT", 18, -420)
+    opacityLabel:SetPoint("TOPLEFT", skillsSettingsWidgets.BarFontButton or
+                               skillsSettingsWidgets.ScaleSlider, "BOTTOMLEFT",
+                           -10, -12)
     opacityLabel:SetJustifyH("LEFT")
     opacityLabel:SetText(L["Opacity"])
 
@@ -1225,11 +1279,32 @@ local function CreateSkillsSettingsPanel()
         local settings = GetSkillsSettings()
         if settings then settings.frameOpacity = percent end
         ApplySkillsChrome()
-    end, 140)
+    end)
+
+    local backgroundOpacityLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                                  "GameFontHighlight")
+    backgroundOpacityLabel:SetPoint("TOPLEFT",
+                                    skillsSettingsWidgets.FrameOpacitySlider,
+                                    "BOTTOMLEFT", 0, -10)
+    backgroundOpacityLabel:SetJustifyH("LEFT")
+    backgroundOpacityLabel:SetText(L["Background Opacity"])
+    skillsSettingsWidgets.BackgroundOpacitySlider = UI.CreatePercentSlider(
+                                                       "VitalFrameSkillsBackgroundOpacitySlider",
+                                                       settingsPanel,
+                                                       backgroundOpacityLabel,
+                                                       function()
+        return GetSkillsPercent("backgroundOpacity")
+    end, function(percent)
+        local settings = GetSkillsSettings()
+        if settings then settings.backgroundOpacity = percent end
+        ApplySkillsChrome()
+    end)
 
     local contentOpacityLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
                                                                "GameFontHighlight")
-    contentOpacityLabel:SetPoint("TOPLEFT", frameOpacityLabel, "TOPLEFT", 210, 0)
+    contentOpacityLabel:SetPoint("TOPLEFT",
+                                 skillsSettingsWidgets.BackgroundOpacitySlider,
+                                 "BOTTOMLEFT", 0, -10)
     contentOpacityLabel:SetJustifyH("LEFT")
     contentOpacityLabel:SetText(L["Content Opacity"])
     skillsSettingsWidgets.ContentOpacitySlider = UI.CreatePercentSlider(
@@ -1242,26 +1317,24 @@ local function CreateSkillsSettingsPanel()
         local settings = GetSkillsSettings()
         if settings then settings.contentOpacity = percent end
         LayoutSkillBars()
-    end, 140)
+    end)
 
-    local function PlaceSkillsOpacity()
+    local function FitSkillsOptionsHeight()
         local top = settingsPanel:GetTop()
-        local leftBottom = selectScroll and selectScroll:GetBottom()
-        local rightBottom = skillsSettingsWidgets.BarFontButton and
-                                skillsSettingsWidgets.BarFontButton:GetBottom()
-        if not top or not leftBottom or not rightBottom then return end
-        local lowest = math.min(leftBottom, rightBottom)
-        opacityLabel:ClearAllPoints()
-        opacityLabel:SetPoint("TOPLEFT", settingsPanel, "TOPLEFT", 18,
-                              -(top - lowest) - 18)
-        local needed = (top - lowest) + 18 + 120
+        local checksBottom = growUpCheck and growUpCheck:GetBottom()
+        local opacityBottom = skillsSettingsWidgets.ContentOpacitySlider and
+                                  skillsSettingsWidgets.ContentOpacitySlider:GetBottom()
+        if not top or not opacityBottom then return end
+        local lowest = opacityBottom
+        if checksBottom and checksBottom < lowest then lowest = checksBottom end
+        local needed = (top - lowest) + 53
         settingsPanel:SetHeight(math.ceil(needed))
     end
     settingsPanel:HookScript("OnShow", function()
         if Compat and Compat.After then
-            Compat.After(0, PlaceSkillsOpacity)
+            Compat.After(0, FitSkillsOptionsHeight)
         else
-            PlaceSkillsOpacity()
+            FitSkillsOptionsHeight()
         end
     end)
 
@@ -1306,6 +1379,7 @@ function UI.CreateSkillsFrame()
     local frame = CreateFrame("Frame", SKILLS_FRAME_NAME, UIParent,
                              "BackdropTemplate")
     frame:SetSize(width, height)
+    frame:SetScale(GetSavedSkillsScale())
     frame:SetPoint("CENTER", UIParent, "CENTER", 180, 0)
     AllowClientFramePosition(frame)
     frame:SetToplevel(true)
@@ -1316,14 +1390,14 @@ function UI.CreateSkillsFrame()
     frame:SetFrameStrata("LOW")
     frame:SetFrameLevel(2)
     frame:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
         edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
         tile = true,
         tileSize = 16,
         edgeSize = 16,
         insets = {left = 4, right = 4, top = 4, bottom = 4}
     })
-    frame:SetBackdropColor(0, 0, 0, 0.5)
+    frame:SetBackdropColor(0, 0, 0, 1)
     local borderR, borderG, borderB, borderA = GetSharedFrameBorderColor()
     frame:SetBackdropBorderColor(borderR, borderG, borderB, borderA)
     if frame.SetClipsChildren then frame:SetClipsChildren(true) end
@@ -1445,6 +1519,7 @@ function UI.ApplySavedSkillsFrameLayout()
             y = tonumber(savedY) or 0
         end
     end
+    skillsFrame:SetScale(GetSavedSkillsScale())
     skillsFrame:ClearAllPoints()
     skillsFrame:SetPoint(point, UIParent, point, x, y)
     AllowClientFramePosition()
@@ -1471,9 +1546,12 @@ function UI.ResetSkillsFrame()
         settings.shown = 1
         settings.barFont = "frizqt"
         settings.barFontSize = 12
+        settings.scale = 1
         settings.frameOpacity = 100
+        settings.backgroundOpacity = 100
         settings.contentOpacity = 100
     end
+    skillsFrame:SetScale(1)
     skillsFrame:ClearAllPoints()
     skillsFrame:SetPoint("CENTER", UIParent, "CENTER", 180, 0)
     PersistSkillsPoint("CENTER", 180, 0, true)

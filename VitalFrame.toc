@@ -2,7 +2,7 @@
 ## Title: Vital Frame
 ## Notes: Stream-friendly name, level, and progress bars
 ## Author: Starlynk
-## Version: 1.1.2
+## Version: 1.1.3
 ## SavedVariables: VitalFrameDB
 ## OptionalDeps: Ace3
 ## X-Category: UnitFrames

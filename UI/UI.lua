@@ -176,9 +176,11 @@ end
 local function ApplyFrameTheme()
     local r, g, b, a = GetResolvedThemeColor()
     if vitalFrameFrame and vitalFrameFrame.SetBackdropBorderColor then
-        local opacity = GetFramePercent("frameOpacity") / 100
-        vitalFrameFrame:SetBackdropColor(0, 0, 0, 0.5 * opacity)
-        vitalFrameFrame:SetBackdropBorderColor(r, g, b, (a or 1) * opacity)
+        vitalFrameFrame:SetAlpha(GetFramePercent("frameOpacity") / 100)
+        vitalFrameFrame:SetBackdropColor(0, 0, 0,
+                                         GetFramePercent("backgroundOpacity") /
+                                             100)
+        vitalFrameFrame:SetBackdropBorderColor(r, g, b, a or 1)
     end
     if UI.ApplySkillsFrameTheme then UI.ApplySkillsFrameTheme() end
     RefreshThemeChecks()
@@ -953,6 +955,8 @@ local function AllowClientFramePosition(frame)
     end
 end
 
+local ParentTopLeftOffset
+
 local function SaveFramePositionFromOffsets(x, y)
     if addonTable.SaveLayoutPoint then
         addonTable.SaveLayoutPoint("frame", "TOPLEFT", x, y)
@@ -966,20 +970,15 @@ local function SaveFramePosition()
         local p, _, _, px, py = vitalFrameFrame:GetPoint(1)
         return p, tonumber(px), tonumber(py)
     end)
-    if ok and x and y then
+    if ok and x ~= nil and y ~= nil then
         addonTable.SaveLayoutPoint("frame", point or "TOPLEFT", x, y)
         return
     end
 
     ok, x, y = pcall(function()
-        local left = tonumber(vitalFrameFrame:GetLeft())
-        local top = tonumber(vitalFrameFrame:GetTop())
-        local parentHeight = tonumber(UIParent:GetHeight()) or 0
-        local scale = tonumber(vitalFrameFrame:GetScale()) or 1
-        if not left or not top then return nil end
-        return left, -((parentHeight - top * scale) / scale)
+        return ParentTopLeftOffset(vitalFrameFrame)
     end)
-    if ok and x and y then SaveFramePositionFromOffsets(x, y) end
+    if ok and x ~= nil and y ~= nil then SaveFramePositionFromOffsets(x, y) end
 end
 
 local function SaveFrameSize(width, height)
@@ -1060,15 +1059,11 @@ local function BakeFrameToUIParent(deltaX, deltaY)
     if not vitalFrameFrame then return end
 
     local ok, offsetX, offsetY = pcall(function()
-        local top = tonumber(vitalFrameFrame:GetTop())
-        local left = tonumber(vitalFrameFrame:GetLeft())
-        local scale = tonumber(vitalFrameFrame:GetScale()) or 1
-        local parentHeight = tonumber(UIParent:GetHeight()) or 0
-        if not top or not left then return nil end
-        return left + (deltaX or 0),
-               -((parentHeight - top * scale) / scale) + (deltaY or 0)
+        local x, y = ParentTopLeftOffset(vitalFrameFrame)
+        if x == nil or y == nil then return nil end
+        return x + (deltaX or 0), y + (deltaY or 0)
     end)
-    if not ok or not offsetX then return end
+    if not ok or offsetX == nil then return end
 
     if vitalFrameFrame.ClearFrameSnap then vitalFrameFrame:ClearFrameSnap() end
     vitalFrameFrame:ClearAllPoints()
@@ -1351,6 +1346,89 @@ local function ClampSizeValue(value, minSize, maxSize)
     if n > maxSize then n = maxSize end
     return n
 end
+
+local FRAME_SCALE_MIN = 0.5
+local FRAME_SCALE_MAX = 2
+local FRAME_SCALE_STEP = 0.05
+
+local function ClampFrameScale(value)
+    local n = tonumber(value) or 1
+    if n < FRAME_SCALE_MIN then n = FRAME_SCALE_MIN end
+    if n > FRAME_SCALE_MAX then n = FRAME_SCALE_MAX end
+    local steps = math.floor((n / FRAME_SCALE_STEP) + 0.5)
+    return steps * FRAME_SCALE_STEP
+end
+
+local function GetSavedFrameScale()
+    local db = GetDB()
+    local frameSettings = db and db.profile and db.profile.frame
+    return ClampFrameScale(frameSettings and frameSettings.scale)
+end
+
+local function ScaleAroundCenter(frame, newScale)
+    if not frame then return nil end
+    local oldScale = tonumber(frame:GetScale()) or 1
+    if math.abs(oldScale - newScale) < 0.001 then return nil end
+
+    local point, relativeTo, relativePoint, x, y, centerX, centerY
+    local ok, readPoint, readRelative, readRelativePoint, readX, readY,
+        readCenterX, readCenterY = pcall(function()
+        local p, rel, relPoint, px, py = frame:GetPoint(1)
+        local gx, gy = frame:GetCenter()
+        return p, rel, relPoint, tonumber(px), tonumber(py), tonumber(gx),
+               tonumber(gy)
+    end)
+    if ok then
+        point, relativeTo, relativePoint = readPoint, readRelative,
+                                            readRelativePoint
+        x, y, centerX, centerY = readX, readY, readCenterX, readCenterY
+    end
+    frame:SetScale(newScale)
+    if x == nil or y == nil or centerX == nil or centerY == nil then
+        return nil
+    end
+    local newCenterX, newCenterY = frame:GetCenter()
+    newCenterX, newCenterY = tonumber(newCenterX), tonumber(newCenterY)
+    if newCenterX == nil or newCenterY == nil then return nil end
+    local newX = x + (centerX * oldScale) - (newCenterX * newScale)
+    local newY = y + (centerY * oldScale) - (newCenterY * newScale)
+    point = point or "CENTER"
+    relativePoint = relativePoint or point
+    frame:ClearAllPoints()
+    frame:SetPoint(point, relativeTo or UIParent, relativePoint, newX, newY)
+    return point, newX, newY
+end
+
+local function ApplyFrameScale(scale)
+    scale = ClampFrameScale(scale)
+    local db = GetDB()
+    if db and db.profile and db.profile.frame then
+        db.profile.frame.scale = scale
+    end
+    if not vitalFrameFrame then return scale end
+    local point, x, y = ScaleAroundCenter(vitalFrameFrame, scale)
+    if point and addonTable.SaveLayoutPoint then
+        addonTable.SaveLayoutPoint("frame", point, x, y)
+    end
+    return scale
+end
+
+UI.ScaleAroundCenter = ScaleAroundCenter
+
+-- Matches EditModeSystemMixin:BreakFrameSnap. GetLeft is already a
+-- SetPoint x. GetTop is converted with the frame scale, then the
+-- TOPLEFT y is divided by that scale again.
+ParentTopLeftOffset = function(frame)
+    local scale = tonumber(frame:GetScale()) or 1
+    if scale == 0 then scale = 1 end
+    local left = tonumber(frame:GetLeft())
+    local top = tonumber(frame:GetTop())
+    local parentHeight = tonumber(UIParent:GetHeight()) or 0
+    if left == nil or top == nil then return nil end
+    return left, -((parentHeight - (top * scale)) / scale)
+end
+
+UI.ClampFrameScale = ClampFrameScale
 
 local SETTINGS_SLIDER_WIDTH = 200
 
@@ -1691,6 +1769,42 @@ local function CreatePercentSlider(name, parent, label, getPercent, setPercent,
     return control
 end
 
+local function CreateScaleSlider(name, parent, label, getScale, setScale, width)
+    local control, slider = CreateSizeSlider(name, parent,
+                                             width or SETTINGS_SLIDER_WIDTH)
+    control:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 0, -2)
+    slider:SetMinMaxValues(FRAME_SCALE_MIN * 100, FRAME_SCALE_MAX * 100)
+    slider:SetValueStep(FRAME_SCALE_STEP * 100)
+    if slider.SetObeyStepOnDrag then
+        pcall(slider.SetObeyStepOnDrag, slider, true)
+    end
+    HideSliderCaptions(control)
+
+    local valueText = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    valueText:SetPoint("LEFT", control, "RIGHT", 8, 0)
+    valueText:SetJustifyH("LEFT")
+
+    local function Refresh()
+        local percent = math.floor(ClampFrameScale(getScale()) * 100 + 0.5)
+        valueText:SetText(percent .. "%")
+        if slider:GetValue() ~= percent then slider:SetValue(percent) end
+    end
+
+    slider:SetScript("OnValueChanged", function(_, value)
+        local percent = math.floor((tonumber(value) or 100) + 0.5)
+        local scale = ClampFrameScale(percent / 100)
+        percent = math.floor(scale * 100 + 0.5)
+        valueText:SetText(percent .. "%")
+        if math.abs(ClampFrameScale(getScale()) - scale) >= 0.001 then
+            setScale(scale)
+        end
+    end)
+
+    control.Refresh = Refresh
+    Refresh()
+    return control
+end
+
 local function SetSelectionVisual(isSelected)
     if not vitalFrameSelection or not vitalFrameSelection.Background then
         return
@@ -1805,8 +1919,14 @@ local function UpdateSettingsPanelVisibility()
         if vitalFrameSettingsPanel.frameOpacitySlider then
             vitalFrameSettingsPanel.frameOpacitySlider.Refresh()
         end
+        if vitalFrameSettingsPanel.backgroundOpacitySlider then
+            vitalFrameSettingsPanel.backgroundOpacitySlider.Refresh()
+        end
         if vitalFrameSettingsPanel.contentOpacitySlider then
             vitalFrameSettingsPanel.contentOpacitySlider.Refresh()
+        end
+        if vitalFrameSettingsPanel.scaleSlider then
+            vitalFrameSettingsPanel.scaleSlider.Refresh()
         end
     end
 
@@ -1946,6 +2066,7 @@ local function ApplySavedFrameLayout()
                                   FRAME_MAX_HEIGHT) or DEFAULT_FRAME_HEIGHT
 
     vitalFrameFrame:SetSize(width, height)
+    vitalFrameFrame:SetScale(GetSavedFrameScale())
     local point, x, y = "CENTER", 0, 0
     if addonTable.GetLayoutPoint then
         local savedPoint, savedX, savedY = addonTable.GetLayoutPoint("frame")
@@ -2046,7 +2167,14 @@ local function ResetToDefaults()
         }
         db.profile.frame = db.profile.frame or {}
         db.profile.frame.frameOpacity = 100
+        db.profile.frame.backgroundOpacity = 100
         db.profile.frame.contentOpacity = 100
+        db.profile.frame.scale = 1
+    end
+    ApplyFrameScale(1)
+    if vitalFrameSettingsPanel and vitalFrameSettingsPanel.scaleSlider and
+        vitalFrameSettingsPanel.scaleSlider.Refresh then
+        vitalFrameSettingsPanel.scaleSlider.Refresh()
     end
     ApplyFrameTheme()
     UpdateProgressBarLayout()
@@ -2118,10 +2246,10 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
 
     local leftColumn = CreateFrame("Frame", nil, settingsPanel)
     leftColumn:SetSize(1, 1)
-    leftColumn:SetPoint("TOPLEFT", settingsPanel, "TOPLEFT", 18, -42)
     local rightColumn = CreateFrame("Frame", nil, settingsPanel)
     rightColumn:SetSize(1, 1)
-    rightColumn:SetPoint("TOPLEFT", leftColumn, "TOPRIGHT", 268, 0)
+    rightColumn:SetPoint("TOPLEFT", settingsPanel, "TOPLEFT", 18, -42)
+    leftColumn:SetPoint("TOPLEFT", rightColumn, "TOPRIGHT", 268, 0)
 
     local widthLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
                                                       "GameFontHighlightMedium")
@@ -2216,9 +2344,25 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
     settingsPanel.heightValueText = heightValueText
     settingsPanel.heightValueText:SetText(tostring(frameHeight))
 
+    local scaleLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                      "GameFontHighlightMedium")
+    scaleLabel:SetPoint("TOPLEFT", heightControl, "BOTTOMLEFT", 0, -10)
+    scaleLabel:SetJustifyH("LEFT")
+    scaleLabel:SetText(L["Scale"])
+    settingsPanel.scaleSlider = CreateScaleSlider("VitalFrameScaleSlider",
+                                                  settingsPanel, scaleLabel,
+                                                  GetSavedFrameScale,
+                                                  ApplyFrameScale)
+
+    local barsLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                     "GameFontHighlightMedium")
+    barsLabel:SetPoint("TOPLEFT", rightColumn, "TOPLEFT", 0, 0)
+    barsLabel:SetJustifyH("LEFT")
+    barsLabel:SetText(L["Bars"])
+
     local autoScaleBarsCheck = CreateFrame("CheckButton", nil, settingsPanel,
                                            "UICheckButtonTemplate")
-    autoScaleBarsCheck:SetPoint("TOPLEFT", heightControl, "BOTTOMLEFT", 0, -4)
+    autoScaleBarsCheck:SetPoint("TOPLEFT", barsLabel, "BOTTOMLEFT", 10, -4)
 
     local autoScaleBarsLabel = autoScaleBarsCheck:CreateFontString(nil,
                                                                    "OVERLAY",
@@ -2233,12 +2377,6 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
         self:SetChecked(GetAutoScaleBars())
     end)
 
-    local barsLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
-                                                     "GameFontHighlightMedium")
-    barsLabel:SetPoint("TOPLEFT", autoScaleBarsCheck, "BOTTOMLEFT", -10, -8)
-    barsLabel:SetJustifyH("LEFT")
-    barsLabel:SetText(L["Bars"])
-
     settingsPanel.barChecks = settingsPanel.barChecks or {}
     local prevCheck
     local alignAfterXpSubsets = false
@@ -2248,7 +2386,8 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
         local check = CreateFrame("CheckButton", nil, settingsPanel,
                                   "UICheckButtonTemplate")
         if not prevCheck then
-            check:SetPoint("TOPLEFT", barsLabel, "BOTTOMLEFT", 10, checkGap)
+            check:SetPoint("TOPLEFT", autoScaleBarsCheck, "BOTTOMLEFT", 0,
+                           checkGap)
         elseif alignAfterXpSubsets then
             check:SetPoint("TOPLEFT", prevCheck, "BOTTOMLEFT", -16, checkGap)
             alignAfterXpSubsets = false
@@ -2369,7 +2508,8 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
 
     local optionsLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
                                                         "GameFontHighlightMedium")
-    optionsLabel:SetPoint("TOPLEFT", rightColumn, "TOPLEFT", 0, 0)
+    optionsLabel:SetPoint("TOP", prevCheck or rightColumn, "BOTTOM", 0, -12)
+    optionsLabel:SetPoint("LEFT", rightColumn, "LEFT", 0, 0)
     optionsLabel:SetJustifyH("LEFT")
     optionsLabel:SetText(L["Options"])
 
@@ -2509,7 +2649,8 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
 
     local fontsLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
                                                       "GameFontHighlightMedium")
-    fontsLabel:SetPoint("TOPLEFT", themeForeverCheck, "BOTTOMLEFT", -10, -12)
+    fontsLabel:SetPoint("TOPLEFT", settingsPanel.scaleSlider, "BOTTOMLEFT", 0,
+                        -12)
     fontsLabel:SetJustifyH("LEFT")
     fontsLabel:SetText(L["Fonts"])
 
@@ -2614,7 +2755,8 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
 
     local opacityLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
                                                         "GameFontHighlightMedium")
-    opacityLabel:SetPoint("TOPLEFT", settingsPanel, "TOPLEFT", 18, -560)
+    opacityLabel:SetPoint("TOPLEFT", settingsPanel.barsFontButton or
+                               settingsPanel.scaleSlider, "BOTTOMLEFT", -10, -12)
     opacityLabel:SetJustifyH("LEFT")
     opacityLabel:SetText(L["Opacity"])
 
@@ -2630,9 +2772,25 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
         return GetFramePercent("frameOpacity")
     end, function(percent) SetFramePercent("frameOpacity", percent) end)
 
+    local backgroundOpacityLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                                  "GameFontHighlight")
+    backgroundOpacityLabel:SetPoint("TOPLEFT", settingsPanel.frameOpacitySlider,
+                                    "BOTTOMLEFT", 0, -10)
+    backgroundOpacityLabel:SetJustifyH("LEFT")
+    backgroundOpacityLabel:SetText(L["Background Opacity"])
+    settingsPanel.backgroundOpacitySlider = CreatePercentSlider(
+                                                "VitalFrameBackgroundOpacitySlider",
+                                                settingsPanel,
+                                                backgroundOpacityLabel,
+                                                function()
+        return GetFramePercent("backgroundOpacity")
+    end, function(percent) SetFramePercent("backgroundOpacity", percent) end)
+
     local contentOpacityLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
                                                                "GameFontHighlight")
-    contentOpacityLabel:SetPoint("TOPLEFT", frameOpacityLabel, "TOPLEFT", 268, 0)
+    contentOpacityLabel:SetPoint("TOPLEFT",
+                                 settingsPanel.backgroundOpacitySlider,
+                                 "BOTTOMLEFT", 0, -10)
     contentOpacityLabel:SetJustifyH("LEFT")
     contentOpacityLabel:SetText(L["Content Opacity"])
     settingsPanel.contentOpacitySlider = CreatePercentSlider(
@@ -2642,24 +2800,23 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
         return GetFramePercent("contentOpacity")
     end, function(percent) SetFramePercent("contentOpacity", percent) end)
 
-    local function PlaceOpacityBelowColumns()
+    local function FitOptionsHeight()
         local top = settingsPanel:GetTop()
-        local leftBottom = prevCheck and prevCheck:GetBottom()
-        local rightBottom = settingsPanel.barsFontButton and
-                                settingsPanel.barsFontButton:GetBottom()
-        if not top or not leftBottom or not rightBottom then return end
-        local lowest = math.min(leftBottom, rightBottom)
-        opacityLabel:ClearAllPoints()
-        opacityLabel:SetPoint("TOPLEFT", settingsPanel, "TOPLEFT", 18,
-                              -(top - lowest) - 18)
-        local needed = (top - lowest) + 18 + 120
+        local checksBottom = settingsPanel.themeForeverCheck and
+                                 settingsPanel.themeForeverCheck:GetBottom()
+        local opacityBottom = settingsPanel.contentOpacitySlider and
+                                  settingsPanel.contentOpacitySlider:GetBottom()
+        if not top or not opacityBottom then return end
+        local lowest = opacityBottom
+        if checksBottom and checksBottom < lowest then lowest = checksBottom end
+        local needed = (top - lowest) + 53
         settingsPanel:SetHeight(math.ceil(needed))
     end
     settingsPanel:HookScript("OnShow", function()
         if Compat.After then
-            Compat.After(0, PlaceOpacityBelowColumns)
+            Compat.After(0, FitOptionsHeight)
         else
-            PlaceOpacityBelowColumns()
+            FitOptionsHeight()
         end
     end)
 
@@ -2720,6 +2877,7 @@ local function CreateVitalFrame()
     local frame = CreateFrame("Frame", MAIN_FRAME_NAME, UIParent,
                               "BackdropTemplate")
     frame:SetSize(frameWidth, frameHeight)
+    frame:SetScale(GetSavedFrameScale())
     frame:SetPoint("CENTER")
     AllowClientFramePosition(frame)
 
@@ -2733,14 +2891,14 @@ local function CreateVitalFrame()
     frame:SetAlpha(1)
 
     frame:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
         edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
         tile = true,
         tileSize = 16,
         edgeSize = 16,
         insets = {left = 4, right = 4, top = 4, bottom = 4}
     })
-    frame:SetBackdropColor(0, 0, 0, 0.5)
+    frame:SetBackdropColor(0, 0, 0, 1)
     frame:SetBackdropBorderColor(0.83, 0.66, 0.27, 1)
 
     local selection = CreateFrame("Frame", nil, frame, "BackdropTemplate")
@@ -3088,6 +3246,9 @@ function UI.CreatePercentSlider(name, parent, label, getPercent, setPercent,
                                  width)
     return CreatePercentSlider(name, parent, label, getPercent, setPercent,
                                width)
+end
+function UI.CreateScaleSlider(name, parent, label, getScale, setScale, width)
+    return CreateScaleSlider(name, parent, label, getScale, setScale, width)
 end
 function UI.GetFrameBorderColor() return GetResolvedThemeColor() end
 function UI.SetTheme(theme) SetTheme(theme) end

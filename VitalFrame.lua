@@ -14,6 +14,8 @@ local defaults = {
             y = 0,
             width = 200,
             height = 200,
+            verticalWidth = 800,
+            verticalHeight = 80,
             shown = true,
             scale = 1,
             frameOpacity = 100,
@@ -25,6 +27,8 @@ local defaults = {
             level = "frizqt",
             bars = "frizqt",
             nameSize = 24,
+            verticalNameSize = 24,
+            verticalLevelSize = 32,
             lastNamePercent = 50,
             barSize = 12
         },
@@ -37,7 +41,16 @@ local defaults = {
             },
             xpFill = {useClassColor = false, hideWhenMaxLevel = false},
             reputation = {autoSwitch = true},
-            autoScale = false
+            autoScale = false,
+            vertical = false,
+            levelPlace = "below",
+            nameLines = 2,
+            side = {
+                xpFill = "left",
+                petXp = "left",
+                reputation = "right",
+                crafting = "right"
+            }
         },
         hideBlizzardWatchBar = true,
         streamerMode = false,

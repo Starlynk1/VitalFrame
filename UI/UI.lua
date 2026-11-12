@@ -72,6 +72,7 @@ local NAME_FIRST_FONT_SIZE = 24
 local NAME_LAST_FONT_SIZE = 12
 local NAME_ICON_SIZE = 22
 local NAME_MIN_FONT_SIZE = 8
+local VERTICAL_FONT_MAX = 72
 -- Level text stays this many points larger than the name and icon.
 -- Change this value and /reload to tune it.
 local LEVEL_NAME_POINT_GAP = 4
@@ -218,6 +219,126 @@ local function SetAutoScaleBars(enabled)
     UpdateProgressBarLayout()
 end
 
+local barSides = {}
+
+function barSides.Enabled()
+    local db = GetDB()
+    local bars = db and db.profile and db.profile.bars
+    return ReadFlag(bars and bars.vertical, false)
+end
+
+function barSides.Side(barKey)
+    local db = GetDB()
+    local sides = db and db.profile and db.profile.bars and db.profile.bars.side
+    local side = sides and sides[barKey]
+    if side == "right" or side == "left" then return side end
+    if barKey == "reputation" or barKey == "crafting" then return "right" end
+    return "left"
+end
+
+function barSides.RefreshChecks()
+    local panel = vitalFrameSettingsPanel
+    if not panel then return end
+    if panel.ShowLayoutTab then panel.ShowLayoutTab(barSides.Enabled()) end
+    if panel.barSideRefresh then
+        for _, refresh in pairs(panel.barSideRefresh) do refresh() end
+    end
+end
+
+function barSides.SetEnabled(enabled)
+    local db = GetDB()
+    if not db or not db.profile then return end
+    db.profile.bars = db.profile.bars or {}
+    db.profile.bars.vertical = WriteFlag(enabled)
+    UpdateProgressBarLayout()
+    barSides.RefreshChecks()
+end
+
+function barSides.SetSide(barKey, side)
+    local db = GetDB()
+    if not db or not db.profile then return end
+    db.profile.bars = db.profile.bars or {}
+    db.profile.bars.side = db.profile.bars.side or {}
+    db.profile.bars.side[barKey] = side == "right" and "right" or "left"
+    UpdateProgressBarLayout()
+    barSides.RefreshChecks()
+end
+
+function barSides.LevelPlace()
+    local db = GetDB()
+    local bars = db and db.profile and db.profile.bars
+    local place = bars and bars.levelPlace
+    if place == "left" or place == "right" or place == "below" then
+        return place
+    end
+    return "below"
+end
+
+function barSides.SetLevelPlace(place)
+    if place ~= "left" and place ~= "right" then place = "below" end
+    local db = GetDB()
+    if not db or not db.profile then return end
+    db.profile.bars = db.profile.bars or {}
+    db.profile.bars.levelPlace = place
+    UpdateProgressBarLayout()
+    barSides.RefreshChecks()
+end
+
+function barSides.NameLines()
+    local db = GetDB()
+    local bars = db and db.profile and db.profile.bars
+    if bars and tonumber(bars.nameLines) == 1 then return 1 end
+    return 2
+end
+
+function barSides.SetNameLines(lines)
+    local db = GetDB()
+    if not db or not db.profile then return end
+    db.profile.bars = db.profile.bars or {}
+    db.profile.bars.nameLines = lines == 1 and 1 or 2
+    UpdateProgressBarLayout()
+    barSides.RefreshChecks()
+end
+
+function barSides.Limits()
+    if barSides.Enabled() then
+        local parentW = 0
+        if UIParent and UIParent.GetWidth then
+            parentW = tonumber(UIParent:GetWidth()) or 0
+        end
+        if parentW < 400 then parentW = 1920 end
+        local scale = 1
+        if vitalFrameFrame and vitalFrameFrame.GetScale then
+            scale = tonumber(vitalFrameFrame:GetScale()) or 1
+        end
+        if scale < 0.5 then scale = 0.5 end
+        local maxW = math.floor((parentW / scale) + 0.5)
+        if maxW < FRAME_MIN_WIDTH then maxW = FRAME_MIN_WIDTH end
+        return FRAME_MIN_WIDTH, maxW, 40, FRAME_MAX_HEIGHT
+    end
+    return FRAME_MIN_WIDTH, FRAME_MAX_WIDTH, FRAME_MIN_HEIGHT, FRAME_MAX_HEIGHT
+end
+
+function barSides.SavedSize()
+    local db = GetDB()
+    local frame = db and db.profile and db.profile.frame
+    local minW, maxW, minH, maxH = barSides.Limits()
+    local function Clamp(value, fallback, minSize, maxSize)
+        local n = tonumber(value)
+        if not n then n = fallback end
+        n = math.floor(n + 0.5)
+        if n < minSize then n = minSize end
+        if n > maxSize then n = maxSize end
+        return n
+    end
+    if barSides.Enabled() then
+        return Clamp(frame and frame.verticalWidth, 800, minW, maxW),
+               Clamp(frame and frame.verticalHeight, 80, minH, maxH)
+    end
+    return Clamp(frame and frame.width, DEFAULT_FRAME_WIDTH, minW, maxW),
+           Clamp(frame and frame.height, DEFAULT_FRAME_HEIGHT, minH, maxH)
+end
+
 local function GetDesiredBarHeight(barKey)
     local base = GetBaseBarHeight(barKey)
     if not GetAutoScaleBars() then return base end
@@ -269,6 +390,7 @@ local function SetBarEnabled(barKey, enabled)
     db.profile.bars.enabled = db.profile.bars.enabled or {}
     db.profile.bars.enabled[barKey] = WriteFlag(enabled)
     UpdateProgressBarLayout()
+    barSides.RefreshChecks()
     if addonTable and addonTable.RefreshAllData then
         addonTable.RefreshAllData()
     end
@@ -371,6 +493,9 @@ local function GetNameMaxWidth()
     local maxWidth = math.floor(
                          frameWidth - (NAME_FRAME_INSET * 2) - iconWidth -
                              NAME_ICON_GAP)
+    if vitalFrameFrame and vitalFrameFrame.LayoutNameMaxWidth then
+        return vitalFrameFrame.LayoutNameMaxWidth
+    end
     if maxWidth < 40 then maxWidth = 40 end
     return maxWidth
 end
@@ -466,6 +591,20 @@ function fontMetrics.nameSize()
                             NAME_FIRST_FONT_SIZE, NAME_FIRST_FONT_SIZE)
 end
 
+function fontMetrics.verticalNameSize()
+    local db = GetDB()
+    local fonts = db and db.profile and db.profile.fonts
+    return fontMetrics.clamp(fonts and fonts.verticalNameSize, NAME_MIN_FONT_SIZE,
+                            VERTICAL_FONT_MAX, NAME_FIRST_FONT_SIZE)
+end
+
+function fontMetrics.verticalLevelSize()
+    local db = GetDB()
+    local fonts = db and db.profile and db.profile.fonts
+    return fontMetrics.clamp(fonts and fonts.verticalLevelSize, NAME_MIN_FONT_SIZE,
+                            VERTICAL_FONT_MAX, 32)
+end
+
 function fontMetrics.lastPercent()
     local db = GetDB()
     local fonts = db and db.profile and db.profile.fonts
@@ -557,6 +696,7 @@ local function UpdateHeaderLayout(nameSize)
         not vitalFrameFrame.ClassIcon then return end
 
     local nameMax = fontMetrics.nameSize()
+    if barSides.Enabled() then nameMax = fontMetrics.verticalNameSize() end
     nameSize = tonumber(nameSize) or currentNamePointSize
     if nameSize > nameMax then nameSize = nameMax end
     if nameSize < NAME_MIN_FONT_SIZE then nameSize = NAME_MIN_FONT_SIZE end
@@ -573,14 +713,37 @@ local function UpdateHeaderLayout(nameSize)
     RefreshCachedDisplayName()
     local firstName = cachedFirstName or L["Character"]
     local lastName = cachedLastName
+    local oneLine = barSides.Enabled() and barSides.NameLines() == 1
+    if oneLine and NameIsPresent(lastName) then
+        local combinedOk, combined = pcall(function()
+            return firstName .. " " .. lastName
+        end)
+        if combinedOk and NameIsPresent(combined) then
+            firstName = combined
+            lastName = nil
+        end
+    end
+    local singleLine = oneLine and not NameIsPresent(lastName)
 
     ApplyOwnedFont(nameText, "Name", nameSize)
     nameText:SetWidth(maxWidth)
-    nameText:SetWordWrap(true)
-    nameText:SetNonSpaceWrap(true)
+    nameText:SetWordWrap(not singleLine)
+    nameText:SetNonSpaceWrap(not singleLine)
     nameText:SetJustifyH("LEFT")
     nameText:SetJustifyV("TOP")
     nameText:SetText(firstName)
+    if singleLine then
+        local width = StringPixels(nameText, "GetStringWidth", maxWidth)
+        while nameSize > NAME_MIN_FONT_SIZE and width > maxWidth do
+            nameSize = nameSize - 1
+            currentNamePointSize = nameSize
+            iconSize = fontMetrics.iconSize(nameSize, nameMax)
+            classIcon:SetSize(iconSize, iconSize)
+            ApplyOwnedFont(nameText, "Name", nameSize)
+            nameText:SetText(firstName)
+            width = StringPixels(nameText, "GetStringWidth", maxWidth)
+        end
+    end
 
     -- Show the last name before measuring. GetStringWidth throws on Forever
     -- secret values and was aborting this function before the second line.
@@ -908,6 +1071,7 @@ local function SetBarLabelText(barKey, text)
     local bar = vitalFrameFrame.ProgressBarsByKey[barKey]
     if not bar or not bar.LabelText then return end
     bar.LabelText:SetText(text or "")
+    if barSides.Refit then barSides.Refit(bar) end
 end
 
 local function SetLevelText(level)
@@ -957,9 +1121,14 @@ end
 
 local ParentTopLeftOffset
 
+local function ActiveFrameLayoutKind()
+    if barSides.Enabled() then return "frameVertical" end
+    return "frame"
+end
+
 local function SaveFramePositionFromOffsets(x, y)
     if addonTable.SaveLayoutPoint then
-        addonTable.SaveLayoutPoint("frame", "TOPLEFT", x, y)
+        addonTable.SaveLayoutPoint(ActiveFrameLayoutKind(), "TOPLEFT", x, y)
     end
 end
 
@@ -971,7 +1140,8 @@ local function SaveFramePosition()
         return p, tonumber(px), tonumber(py)
     end)
     if ok and x ~= nil and y ~= nil then
-        addonTable.SaveLayoutPoint("frame", point or "TOPLEFT", x, y)
+        addonTable.SaveLayoutPoint(ActiveFrameLayoutKind(), point or "TOPLEFT",
+                                   x, y)
         return
     end
 
@@ -985,8 +1155,13 @@ local function SaveFrameSize(width, height)
     local db = GetDB()
     if not db or not db.profile or not db.profile.frame then return end
 
-    db.profile.frame.width = math.floor(width or 200)
-    db.profile.frame.height = math.floor(height or 200)
+    if barSides.Enabled() then
+        db.profile.frame.verticalWidth = math.floor(width or 800)
+        db.profile.frame.verticalHeight = math.floor(height or 80)
+    else
+        db.profile.frame.width = math.floor(width or 200)
+        db.profile.frame.height = math.floor(height or 200)
+    end
 end
 
 local EDIT_MODE_SNAP_METHODS = {
@@ -1164,6 +1339,192 @@ local function FinishEditModeDrag(frame)
     SaveFramePosition()
 end
 
+function barSides.ApplyLabel(bar, _, barWidth, barHeight)
+    local label = bar.LabelText
+    if not label then return end
+
+    local function FitLabelFont(file, maxSize, crossSize, alongSize)
+        local size = fontMetrics.fitBar(maxSize, crossSize, 4)
+        ApplyPlainFont(label, file, size)
+        local width = StringPixels(label, "GetStringWidth", alongSize)
+        while size > 8 and width > alongSize do
+            size = size - 1
+            ApplyPlainFont(label, file, size)
+            width = StringPixels(label, "GetStringWidth", alongSize)
+        end
+    end
+
+    local along = barWidth - 8
+    local cross = barHeight - 2
+    if along < 8 then along = 8 end
+    if cross < 8 then cross = 8 end
+    label:ClearAllPoints()
+    label:SetWordWrap(false)
+    label:SetJustifyH("CENTER")
+    label:SetJustifyV("MIDDLE")
+    if label.SetRotation then label:SetRotation(0) end
+    FitLabelFont(GetFontFileForRole("bars"), fontMetrics.barSize(), cross, along)
+    label:SetSize(along, barHeight)
+    label:SetPoint("CENTER", bar, "CENTER", 0, 0)
+end
+
+function barSides.Orient(bar, orientation)
+    if bar.SetOrientation then bar:SetOrientation(orientation) end
+    if bar.BgFill and bar.BgFill.SetOrientation then
+        bar.BgFill:SetOrientation(orientation)
+    end
+end
+
+function barSides.Layout()
+    local frame = vitalFrameFrame
+    local inset = 4
+    local frameW = frame:GetWidth()
+    local frameH = frame:GetHeight()
+    local innerW = frameW - (inset * 2)
+    local innerH = frameH - (inset * 2)
+    if innerW < 40 then innerW = 40 end
+    if innerH < 16 then innerH = 16 end
+
+    local leftKeys, rightKeys = {}, {}
+    for _, key in ipairs(BAR_ORDER) do
+        local bar = frame.ProgressBarsByKey[key]
+        if bar then
+            if ShouldShowBar(key) then
+                if barSides.Side(key) == "right" then
+                    rightKeys[#rightKeys + 1] = key
+                else
+                    leftKeys[#leftKeys + 1] = key
+                end
+            else
+                barSides.Orient(bar, "HORIZONTAL")
+            end
+        end
+    end
+
+    local nameSize = fontMetrics.verticalNameSize()
+    local place = barSides.LevelPlace()
+    local oneLine = barSides.NameLines() == 1
+    RefreshCachedDisplayName()
+    local firstName = cachedFirstName or L["Character"]
+    local lastName = cachedLastName
+    local nameW = 80
+    if frame.NameText then
+        ApplyOwnedFont(frame.NameText, "Name", nameSize)
+        frame.NameText:SetWidth(1000)
+        if oneLine and NameIsPresent(lastName) then
+            local combinedOk, combined = pcall(function()
+                return firstName .. " " .. lastName
+            end)
+            if combinedOk and NameIsPresent(combined) then
+                frame.NameText:SetText(combined)
+                lastName = nil
+            else
+                frame.NameText:SetText(firstName)
+            end
+        else
+            frame.NameText:SetText(firstName)
+        end
+        nameW = StringPixels(frame.NameText, "GetStringWidth", 80)
+    end
+    local textH = nameSize
+    if NameIsPresent(lastName) and frame.LastNameText then
+        local lastSize = fontMetrics.lastSize(nameSize)
+        ApplyOwnedFont(frame.LastNameText, "LastName", lastSize)
+        frame.LastNameText:SetWidth(1000)
+        frame.LastNameText:SetText(lastName)
+        local lastW = StringPixels(frame.LastNameText, "GetStringWidth", nameW)
+        if lastW > nameW then nameW = lastW end
+        textH = textH + lastSize
+    end
+
+    local icon = fontMetrics.iconSize(nameSize, nameSize)
+    local headerW = icon + NAME_ICON_GAP + nameW
+    local headerH = icon
+    if textH > headerH then headerH = textH end
+
+    local levelSize = fontMetrics.verticalLevelSize()
+    local levelW = 24
+    if frame.LevelText then
+        ApplyOwnedFont(frame.LevelText, "Level", levelSize)
+        levelW = StringPixels(frame.LevelText, "GetStringWidth", 24)
+        if levelW < 12 then levelW = 12 end
+    end
+
+    local centerW = headerW + 12
+    if place == "left" or place == "right" then
+        centerW = headerW + 8 + levelW + 12
+    elseif levelW + 12 > centerW then
+        centerW = levelW + 12
+    end
+
+    local sideCount = 0
+    if #leftKeys > 0 then sideCount = sideCount + 1 end
+    if #rightKeys > 0 then sideCount = sideCount + 1 end
+    if sideCount == 0 then
+        centerW = innerW
+    else
+        local maxCenter = innerW - (sideCount * 80)
+        if maxCenter < 50 then maxCenter = 50 end
+        if centerW > maxCenter then centerW = maxCenter end
+    end
+    if centerW < 40 then centerW = 40 end
+    if centerW > innerW then centerW = innerW end
+
+    local leftover = innerW - centerW
+    if leftover < 0 then leftover = 0 end
+    local leftW, rightW = 0, 0
+    if #leftKeys > 0 and #rightKeys > 0 then
+        leftW = leftover / 2
+        rightW = leftover - leftW
+    elseif #leftKeys > 0 then
+        leftW = leftover
+    elseif #rightKeys > 0 then
+        rightW = leftover
+    end
+
+    local function Stack(keys, width, fromLeft)
+        local count = #keys
+        if count == 0 or width < 4 then return end
+        local barH = innerH / count
+        if barH < 1 then barH = 1 end
+        for index, key in ipairs(keys) do
+            local bar = frame.ProgressBarsByKey[key]
+            bar:ClearAllPoints()
+            bar:SetSize(width, barH)
+            barSides.Orient(bar, "HORIZONTAL")
+            local y = -inset - ((index - 1) * barH)
+            if fromLeft then
+                bar:SetPoint("TOPLEFT", frame, "TOPLEFT", inset, y)
+            else
+                bar:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -inset, y)
+            end
+            barSides.ApplyLabel(bar, false, width, barH)
+        end
+    end
+    Stack(leftKeys, leftW, true)
+    Stack(rightKeys, rightW, false)
+
+    local nameMax = centerW - icon - NAME_ICON_GAP - 8
+    if place == "left" or place == "right" then
+        nameMax = nameMax - levelW - 8
+    end
+    if nameMax < 40 then nameMax = 40 end
+    local centerLeft = inset + leftW
+    frame.LayoutCenterWidth = centerW
+    frame.LayoutCenterOffset = (centerLeft + (centerW / 2)) - (frameW / 2)
+    frame.LayoutNameMaxWidth = nameMax
+
+    if frame.BarRegion then frame.BarRegion:Hide() end
+end
+
+function barSides.Refit(bar)
+    if not bar or not barSides.Enabled() then return end
+    local width = bar:GetWidth()
+    local height = bar:GetHeight()
+    if not width or not height or width < 8 or height < 8 then return end
+    barSides.ApplyLabel(bar, false, width, height)
+end
+
 UpdateProgressBarLayout = function()
     if not vitalFrameFrame or not vitalFrameFrame.ProgressBarsByKey then
         return
@@ -1176,6 +1537,9 @@ UpdateProgressBarLayout = function()
     local frameHeight = vitalFrameFrame:GetHeight()
     RefreshCachedDisplayName()
     local hasLastName = NameIsPresent(cachedLastName)
+    if barSides.Enabled() and barSides.NameLines() == 1 then
+        hasLastName = false
+    end
 
     local enabledKeys = GetEnabledBarKeys()
     local barCount = #enabledKeys
@@ -1219,51 +1583,62 @@ UpdateProgressBarLayout = function()
         return height
     end
 
+    local vertical = barSides.Enabled()
     local firstVisibleBar = nil
     local topPadding = frameHeight - bottomPadding
-    if barCount >= 1 then
-        local barsHeight = 0
-        for _, key in ipairs(enabledKeys) do
-            barsHeight = barsHeight + GetFittedBarHeight(key)
-        end
+    if vertical then
+        barSides.Layout()
+        topPadding = frameHeight
+    else
+        vitalFrameFrame.LayoutCenterWidth = nil
+        vitalFrameFrame.LayoutCenterOffset = nil
+        vitalFrameFrame.LayoutNameMaxWidth = nil
 
-        topPadding = frameHeight - bottomPadding - barsHeight
-        if topPadding < borderInset then topPadding = borderInset end
+        if barCount >= 1 then
+            local barsHeight = 0
+            for _, key in ipairs(enabledKeys) do
+                barsHeight = barsHeight + GetFittedBarHeight(key)
+            end
 
-        local previousBar = nil
-        for _, key in ipairs(BAR_ORDER) do
-            local bar = vitalFrameFrame.ProgressBarsByKey[key]
-            if bar and ShouldShowBar(key) then
-                bar:ClearAllPoints()
-                local barHeight = GetFittedBarHeight(key)
-                bar:SetSize(usableWidth, barHeight)
-                if bar.LabelText then
-                    ApplyPlainFont(bar.LabelText, GetFontFileForRole("bars"),
-                                   fontMetrics.fitBar(fontMetrics.barSize(), barHeight,
-                                                   2))
+            topPadding = frameHeight - bottomPadding - barsHeight
+            if topPadding < borderInset then topPadding = borderInset end
+
+            local previousBar = nil
+            for _, key in ipairs(BAR_ORDER) do
+                local bar = vitalFrameFrame.ProgressBarsByKey[key]
+                if bar and ShouldShowBar(key) then
+                    bar:ClearAllPoints()
+                    local barHeight = GetFittedBarHeight(key)
+                    bar:SetSize(usableWidth, barHeight)
+                    barSides.Orient(bar, "HORIZONTAL")
+                    barSides.ApplyLabel(bar, false, usableWidth, barHeight)
+                    if not previousBar then
+                        firstVisibleBar = bar
+                        bar:SetPoint("TOP", vitalFrameFrame, "TOP", 0,
+                                     -topPadding)
+                    else
+                        bar:SetPoint("TOP", previousBar, "BOTTOM", 0, 0)
+                    end
+                    previousBar = bar
+                elseif bar then
+                    barSides.Orient(bar, "HORIZONTAL")
                 end
-                if not previousBar then
-                    firstVisibleBar = bar
-                    bar:SetPoint("TOP", vitalFrameFrame, "TOP", 0, -topPadding)
-                else
-                    bar:SetPoint("TOP", previousBar, "BOTTOM", 0, 0)
-                end
-                previousBar = bar
             end
         end
-    end
 
-    if vitalFrameFrame.BarRegion then
-        if firstVisibleBar then
-            vitalFrameFrame.BarRegion:ClearAllPoints()
-            vitalFrameFrame.BarRegion:SetPoint("TOPLEFT", firstVisibleBar,
-                                               "TOPLEFT", 0, 0)
-            vitalFrameFrame.BarRegion:SetPoint("BOTTOMRIGHT", vitalFrameFrame,
-                                               "BOTTOMRIGHT", -borderInset,
-                                               borderInset)
-            vitalFrameFrame.BarRegion:Show()
-        else
-            vitalFrameFrame.BarRegion:Hide()
+        if vitalFrameFrame.BarRegion then
+            if firstVisibleBar then
+                vitalFrameFrame.BarRegion:ClearAllPoints()
+                vitalFrameFrame.BarRegion:SetPoint("TOPLEFT", firstVisibleBar,
+                                                   "TOPLEFT", 0, 0)
+                vitalFrameFrame.BarRegion:SetPoint("BOTTOMRIGHT",
+                                                   vitalFrameFrame,
+                                                   "BOTTOMRIGHT", -borderInset,
+                                                   borderInset)
+                vitalFrameFrame.BarRegion:Show()
+            else
+                vitalFrameFrame.BarRegion:Hide()
+            end
         end
     end
 
@@ -1279,26 +1654,35 @@ UpdateProgressBarLayout = function()
         end
 
         -- Room above the bars, under the header inset, for the name plus level.
-        local room = topPadding - 10 - (LEVEL_TEXT_VERTICAL_PADDING * 2)
-        if room < LEVEL_MIN_FONT_SIZE then room = LEVEL_MIN_FONT_SIZE end
+        local nameSize
+        local levelSize
+        if barSides.Enabled() then
+            nameSize = fontMetrics.verticalNameSize()
+            levelSize = fontMetrics.verticalLevelSize()
+        else
+            local room = topPadding - 10 - (LEVEL_TEXT_VERTICAL_PADDING * 2)
+            if room < LEVEL_MIN_FONT_SIZE then room = LEVEL_MIN_FONT_SIZE end
 
-        local nameSize = nameMax
-        local levelSize = room - HeaderHeightFor(nameSize)
-        local gap = LEVEL_NAME_POINT_GAP
-        if levelSize < nameSize + gap then
-            local lastShare = 0
-            if hasLastName then lastShare = fontMetrics.lastPercent() / 100 end
-            levelSize = math.floor((room + ((1 + lastShare) * gap)) /
-                                       (2 + lastShare))
-            nameSize = levelSize - gap
-        end
-        if nameSize > nameMax then nameSize = nameMax end
-        if nameSize < NAME_MIN_FONT_SIZE then
-            nameSize = NAME_MIN_FONT_SIZE
-        end
-        if levelSize < nameSize + gap then levelSize = nameSize + gap end
-        if levelSize < LEVEL_MIN_FONT_SIZE then
-            levelSize = LEVEL_MIN_FONT_SIZE
+            nameSize = nameMax
+            levelSize = room - HeaderHeightFor(nameSize)
+            local gap = LEVEL_NAME_POINT_GAP
+            if levelSize < nameSize + gap then
+                local lastShare = 0
+                if hasLastName then
+                    lastShare = fontMetrics.lastPercent() / 100
+                end
+                levelSize = math.floor((room + ((1 + lastShare) * gap)) /
+                                           (2 + lastShare))
+                nameSize = levelSize - gap
+            end
+            if nameSize > nameMax then nameSize = nameMax end
+            if nameSize < NAME_MIN_FONT_SIZE then
+                nameSize = NAME_MIN_FONT_SIZE
+            end
+            if levelSize < nameSize + gap then levelSize = nameSize + gap end
+            if levelSize < LEVEL_MIN_FONT_SIZE then
+                levelSize = LEVEL_MIN_FONT_SIZE
+            end
         end
 
         UpdateHeaderLayout(nameSize)
@@ -1315,9 +1699,68 @@ UpdateProgressBarLayout = function()
         vitalFrameFrame.LevelText:SetJustifyH("CENTER")
         vitalFrameFrame.LevelText:SetJustifyV("TOP")
         vitalFrameFrame.LevelText:ClearAllPoints()
-        vitalFrameFrame.LevelText:SetPoint("TOP", vitalFrameFrame, "TOP", 0,
-                                           -(10 + headerHeight +
-                                               LEVEL_TEXT_VERTICAL_PADDING))
+        local header = vitalFrameFrame.HeaderGroup
+        if barSides.Enabled() then
+            local place = barSides.LevelPlace()
+            local offsetX = vitalFrameFrame.LayoutCenterOffset or 0
+            local centerWidth = vitalFrameFrame.LayoutCenterWidth or usableWidth
+            local gap = 2
+            local pad = 1
+            if place == "left" or place == "right" then
+                ApplyOwnedFont(vitalFrameFrame.LevelText, "Level", levelSize)
+                local blockH = headerHeight
+                if levelSize > blockH then blockH = levelSize end
+                local top = math.floor((frameHeight - blockH) / 2)
+                if top < 0 then top = 0 end
+                local levelW = StringPixels(vitalFrameFrame.LevelText,
+                                            "GetStringWidth", centerWidth)
+                if levelW < 12 then levelW = 12 end
+                local shift = (gap + levelW) / 2
+                if place == "right" then shift = -shift end
+                if header then
+                    header:ClearAllPoints()
+                    header:SetPoint("TOP", vitalFrameFrame, "TOP",
+                                    offsetX + shift, -top)
+                end
+                vitalFrameFrame.LevelText:SetWidth(levelW)
+                vitalFrameFrame.LevelText:SetJustifyV("MIDDLE")
+                if place == "right" then
+                    vitalFrameFrame.LevelText:SetJustifyH("LEFT")
+                    if header then
+                        vitalFrameFrame.LevelText:SetPoint("LEFT", header,
+                                                          "RIGHT", gap, 0)
+                    end
+                else
+                    vitalFrameFrame.LevelText:SetJustifyH("RIGHT")
+                    if header then
+                        vitalFrameFrame.LevelText:SetPoint("RIGHT", header,
+                                                          "LEFT", -gap, 0)
+                    end
+                end
+            else
+                ApplyOwnedFont(vitalFrameFrame.LevelText, "Level", levelSize)
+                local block = headerHeight + pad + levelSize
+                local top = math.floor((frameHeight - block) / 2)
+                if top < 0 then top = 0 end
+                if header then
+                    header:ClearAllPoints()
+                    header:SetPoint("TOP", vitalFrameFrame, "TOP", offsetX, -top)
+                end
+                vitalFrameFrame.LevelText:SetWidth(math.max(40, centerWidth))
+                vitalFrameFrame.LevelText:SetPoint("TOP", vitalFrameFrame, "TOP",
+                                                   offsetX,
+                                                   -(top + headerHeight + pad))
+            end
+        else
+            if header then
+                header:ClearAllPoints()
+                header:SetPoint("TOP", vitalFrameFrame, "TOP", 0, -10)
+            end
+            vitalFrameFrame.LevelText:SetWidth(usableWidth)
+            vitalFrameFrame.LevelText:SetPoint("TOP", vitalFrameFrame, "TOP", 0,
+                                               -(10 + headerHeight +
+                                                   LEVEL_TEXT_VERTICAL_PADDING))
+        end
     end
 
     ApplyMainContentOpacity()
@@ -1326,16 +1769,59 @@ end
 local function ApplyFrameSize(width, height)
     if not vitalFrameFrame then return end
 
-    local w = math.max(FRAME_MIN_WIDTH, math.min(FRAME_MAX_WIDTH, math.floor(
-                                                     width or
-                                                         vitalFrameFrame:GetWidth())))
-    local h = math.max(FRAME_MIN_HEIGHT, math.min(FRAME_MAX_HEIGHT, math.floor(
-                                                      height or
-                                                          vitalFrameFrame:GetHeight())))
+    local minW, maxW, minH, maxH = barSides.Limits()
+    local w = math.max(minW, math.min(maxW, math.floor(width or
+                                                           vitalFrameFrame:GetWidth())))
+    local h = math.max(minH, math.min(maxH, math.floor(height or
+                                                           vitalFrameFrame:GetHeight())))
 
     vitalFrameFrame:SetSize(w, h)
     UpdateProgressBarLayout()
     SaveFrameSize(w, h)
+end
+
+function barSides.SyncSizeSliders()
+    local panel = vitalFrameSettingsPanel
+    if not panel or not panel.widthSlider or not panel.heightSlider then return end
+    local minW, maxW, minH, maxH = barSides.Limits()
+    local w, h = barSides.SavedSize()
+    panel.sizing = true
+    panel.widthSlider:SetMinMaxValues(minW, maxW)
+    panel.heightSlider:SetMinMaxValues(minH, maxH)
+    panel.widthSlider:SetValue(w)
+    panel.heightSlider:SetValue(h)
+    panel.sizing = false
+    if panel.widthValueText then
+        panel.widthValueText:SetText(tostring(math.floor(w)))
+    end
+    if panel.heightValueText then
+        panel.heightValueText:SetText(tostring(math.floor(h)))
+    end
+end
+
+function barSides.Select(vertical)
+    local enabled = vertical and true or false
+    if barSides.Enabled() ~= enabled then
+        SaveFramePosition()
+    end
+    local db = GetDB()
+    if not db or not db.profile then return end
+    db.profile.bars = db.profile.bars or {}
+    db.profile.bars.vertical = WriteFlag(enabled)
+    local w, h = barSides.SavedSize()
+    ApplyFrameSize(w, h)
+    if vitalFrameFrame and addonTable.GetLayoutPoint then
+        local point, x, y = addonTable.GetLayoutPoint(ActiveFrameLayoutKind())
+        if point then
+            vitalFrameFrame:ClearAllPoints()
+            vitalFrameFrame:SetPoint(point, UIParent, point, tonumber(x) or 0,
+                                     tonumber(y) or 0)
+            AllowClientFramePosition(vitalFrameFrame)
+        else
+            SaveFramePosition()
+        end
+    end
+    barSides.RefreshChecks()
 end
 
 local function ClampSizeValue(value, minSize, maxSize)
@@ -1408,8 +1894,13 @@ local function ApplyFrameScale(scale)
     if not vitalFrameFrame then return scale end
     local point, x, y = ScaleAroundCenter(vitalFrameFrame, scale)
     if point and addonTable.SaveLayoutPoint then
-        addonTable.SaveLayoutPoint("frame", point, x, y)
+        addonTable.SaveLayoutPoint(ActiveFrameLayoutKind(), point, x, y)
     end
+    if barSides.Enabled() and vitalFrameFrame then
+        local w, h = barSides.SavedSize()
+        ApplyFrameSize(w, h)
+    end
+    barSides.SyncSizeSliders()
     return scale
 end
 
@@ -1878,26 +2369,7 @@ local function UpdateSettingsPanelVisibility()
     vitalFrameSettingsPanel:SetShown(shouldShow)
 
     if shouldShow then
-        local currentWidth = ClampSizeValue(vitalFrameFrame:GetWidth(),
-                                            FRAME_MIN_WIDTH, FRAME_MAX_WIDTH) or
-                                 DEFAULT_FRAME_WIDTH
-        local currentHeight = ClampSizeValue(vitalFrameFrame:GetHeight(),
-                                             FRAME_MIN_HEIGHT, FRAME_MAX_HEIGHT) or
-                                  DEFAULT_FRAME_HEIGHT
-        if vitalFrameSettingsPanel.widthSlider then
-            vitalFrameSettingsPanel.widthSlider:SetValue(currentWidth)
-        end
-        if vitalFrameSettingsPanel.widthValueText then
-            vitalFrameSettingsPanel.widthValueText:SetText(
-                tostring(currentWidth))
-        end
-        if vitalFrameSettingsPanel.heightSlider then
-            vitalFrameSettingsPanel.heightSlider:SetValue(currentHeight)
-        end
-        if vitalFrameSettingsPanel.heightValueText then
-            vitalFrameSettingsPanel.heightValueText:SetText(tostring(
-                                                                currentHeight))
-        end
+        barSides.SyncSizeSliders()
         if vitalFrameSettingsPanel.nameFontButton then
             vitalFrameSettingsPanel.nameFontButton.Refresh()
         end
@@ -1965,6 +2437,7 @@ local function UpdateSettingsPanelVisibility()
     if vitalFrameSettingsPanel.autoScaleBarsCheck then
         vitalFrameSettingsPanel.autoScaleBarsCheck:SetChecked(GetAutoScaleBars())
     end
+    barSides.RefreshChecks()
 
     if vitalFrameSettingsPanel.streamerModeCheck then
         vitalFrameSettingsPanel.streamerModeCheck:SetChecked(GetStreamerMode())
@@ -2060,16 +2533,13 @@ local function ApplySavedFrameLayout()
     local frameSettings = db and db.profile and db.profile.frame
     if not frameSettings then return end
 
-    local width = ClampSizeValue(frameSettings.width, FRAME_MIN_WIDTH,
-                                 FRAME_MAX_WIDTH) or DEFAULT_FRAME_WIDTH
-    local height = ClampSizeValue(frameSettings.height, FRAME_MIN_HEIGHT,
-                                  FRAME_MAX_HEIGHT) or DEFAULT_FRAME_HEIGHT
-
-    vitalFrameFrame:SetSize(width, height)
     vitalFrameFrame:SetScale(GetSavedFrameScale())
+    local width, height = barSides.SavedSize()
+    vitalFrameFrame:SetSize(width, height)
     local point, x, y = "CENTER", 0, 0
     if addonTable.GetLayoutPoint then
-        local savedPoint, savedX, savedY = addonTable.GetLayoutPoint("frame")
+        local savedPoint, savedX, savedY =
+            addonTable.GetLayoutPoint(ActiveFrameLayoutKind())
         if savedPoint then
             point, x, y = savedPoint, tonumber(savedX) or 0, tonumber(savedY) or 0
         end
@@ -2138,12 +2608,29 @@ end
 
 local function ResetToDefaults()
     if not vitalFrameFrame then return end
+    local db = GetDB()
+    if db and db.profile then
+        db.profile.bars = db.profile.bars or {}
+        db.profile.bars.vertical = false
+        db.profile.bars.levelPlace = "below"
+        db.profile.bars.nameLines = 2
+        db.profile.bars.side = {
+            xpFill = "left",
+            petXp = "left",
+            reputation = "right",
+            crafting = "right"
+        }
+        db.profile.frame = db.profile.frame or {}
+        db.profile.frame.verticalWidth = 800
+        db.profile.frame.verticalHeight = 80
+    end
     vitalFrameFrame:ClearAllPoints()
     vitalFrameFrame:SetPoint("CENTER")
     ApplyFrameSize(200, 200)
     AllowClientFramePosition(vitalFrameFrame)
     if addonTable.SaveLayoutPoint then
         addonTable.SaveLayoutPoint("frame", "CENTER", 0, 0, true)
+        addonTable.SaveLayoutPoint("frameVertical", "CENTER", 240, 0, true)
         addonTable.SaveLayoutPoint("skillsFrame", "CENTER", 180, 0, true)
     end
     SaveFramePosition()
@@ -2162,6 +2649,8 @@ local function ResetToDefaults()
             level = "frizqt",
             bars = "frizqt",
             nameSize = NAME_FIRST_FONT_SIZE,
+            verticalNameSize = NAME_FIRST_FONT_SIZE,
+            verticalLevelSize = 32,
             lastNamePercent = 50,
             barSize = 12
         }
@@ -2178,6 +2667,204 @@ local function ResetToDefaults()
     end
     ApplyFrameTheme()
     UpdateProgressBarLayout()
+    barSides.RefreshChecks()
+end
+
+function barSides.BuildVerticalSection(panel, topAnchor)
+    local section = CreateFrame("Frame", nil, panel)
+    section:SetWidth(250)
+    section:SetPoint("TOPLEFT", topAnchor, "BOTTOMLEFT", -16, -8)
+    local y = -2
+
+    local function AddLabel(text)
+        local label = section:CreateFontString(nil, "OVERLAY",
+                                               "GameFontHighlight")
+        label:SetPoint("TOPLEFT", section, "TOPLEFT", 0, y)
+        label:SetJustifyH("LEFT")
+        label:SetText(text)
+        y = y - 18
+    end
+
+    local function AddChoice(parent, previous, text)
+        local check = CreateFrame("CheckButton", nil, parent,
+                                  "UICheckButtonTemplate")
+        if previous then
+            check:SetPoint("LEFT", previous, "RIGHT", 10, 0)
+        else
+            check:SetPoint("LEFT", parent, "LEFT", 0, 0)
+        end
+        local caption = check:CreateFontString(nil, "OVERLAY",
+                                               "GameFontHighlight")
+        caption:SetPoint("LEFT", check, "RIGHT", 2, 1)
+        caption:SetText(text)
+        return check, caption
+    end
+
+    panel.barSideRefresh = panel.barSideRefresh or {}
+    AddLabel(L["Bars"])
+    for _, key in ipairs(GetSettingsBarOrder()) do
+        local def = BAR_DEFS[key]
+        local row = CreateFrame("Frame", nil, section)
+        row:SetSize(250, 26)
+        row:SetPoint("TOPLEFT", section, "TOPLEFT", 0, y)
+        y = y - 28
+        local name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        name:SetPoint("LEFT", row, "LEFT", 0, 0)
+        name:SetWidth(88)
+        name:SetJustifyH("LEFT")
+        name:SetText(def.label or key)
+        local leftCheck, leftLabel = AddChoice(row, name, L["Left"])
+        local rightCheck, rightLabel = AddChoice(row, leftLabel, L["Right"])
+        local function refresh()
+            local onRight = barSides.Side(key) == "right"
+            local usable = IsBarEnabled(key)
+            leftCheck:SetChecked(not onRight)
+            rightCheck:SetChecked(onRight)
+            leftCheck:SetEnabled(usable)
+            rightCheck:SetEnabled(usable)
+            local color = usable and 1 or 0.5
+            name:SetTextColor(color, color, color)
+            leftLabel:SetTextColor(color, color, color)
+            rightLabel:SetTextColor(color, color, color)
+        end
+        leftCheck:SetScript("OnClick", function() barSides.SetSide(key, "left") end)
+        rightCheck:SetScript("OnClick", function()
+            barSides.SetSide(key, "right")
+        end)
+        panel.barSideRefresh[key] = refresh
+        refresh()
+    end
+
+    AddLabel(L["Level"])
+    local levelRow = CreateFrame("Frame", nil, section)
+    levelRow:SetSize(250, 26)
+    levelRow:SetPoint("TOPLEFT", section, "TOPLEFT", 0, y)
+    y = y - 28
+    local belowCheck, belowLabel = AddChoice(levelRow, nil, L["Below"])
+    local leftLevelCheck, leftLevelLabel = AddChoice(levelRow, belowLabel,
+                                                     L["Left"])
+    local rightLevelCheck, rightLevelLabel = AddChoice(levelRow, leftLevelLabel,
+                                                       L["Right"])
+    local function refreshLevel()
+        local place = barSides.LevelPlace()
+        belowCheck:SetChecked(place == "below")
+        leftLevelCheck:SetChecked(place == "left")
+        rightLevelCheck:SetChecked(place == "right")
+    end
+    belowCheck:SetScript("OnClick", function() barSides.SetLevelPlace("below") end)
+    leftLevelCheck:SetScript("OnClick", function() barSides.SetLevelPlace("left") end)
+    rightLevelCheck:SetScript("OnClick", function()
+        barSides.SetLevelPlace("right")
+    end)
+    panel.barSideRefresh.level = refreshLevel
+    refreshLevel()
+
+    AddLabel(L["Name Lines"])
+    local nameRow = CreateFrame("Frame", nil, section)
+    nameRow:SetSize(250, 26)
+    nameRow:SetPoint("TOPLEFT", section, "TOPLEFT", 0, y)
+    y = y - 28
+    local oneCheck, oneLabel = AddChoice(nameRow, nil, L["One Line"])
+    local twoCheck, twoLabel = AddChoice(nameRow, oneLabel, L["Two Lines"])
+    local function refreshLines()
+        local one = barSides.NameLines() == 1
+        oneCheck:SetChecked(one)
+        twoCheck:SetChecked(not one)
+        local color = 1
+        oneLabel:SetTextColor(color, color, color)
+        twoLabel:SetTextColor(color, color, color)
+    end
+    oneCheck:SetScript("OnClick", function() barSides.SetNameLines(1) end)
+    twoCheck:SetScript("OnClick", function() barSides.SetNameLines(2) end)
+    panel.barSideRefresh.nameLines = refreshLines
+    refreshLines()
+
+    local function AddFontSlider(key, labelText, getSize, setSize)
+        AddLabel(labelText)
+        local control, slider = CreateSizeSlider("VitalFrame" .. key, section,
+                                                 150)
+        control:SetPoint("TOPLEFT", section, "TOPLEFT", 0, y)
+        y = y - 36
+        slider:SetMinMaxValues(NAME_MIN_FONT_SIZE, VERTICAL_FONT_MAX)
+        slider:SetValueStep(1)
+        if slider.SetObeyStepOnDrag then
+            pcall(slider.SetObeyStepOnDrag, slider, true)
+        end
+        local valueText = section:CreateFontString(nil, "OVERLAY",
+                                                   "GameFontHighlight")
+        valueText:SetPoint("LEFT", control, "RIGHT", 8, 0)
+        local function refresh()
+            local size = getSize()
+            valueText:SetText(tostring(size))
+            if slider:GetValue() ~= size then slider:SetValue(size) end
+        end
+        slider:SetScript("OnValueChanged", function(_, value)
+            local size = fontMetrics.clamp(value, NAME_MIN_FONT_SIZE,
+                                           VERTICAL_FONT_MAX, getSize())
+            valueText:SetText(tostring(size))
+            if getSize() ~= size then setSize(size) end
+        end)
+        panel.barSideRefresh[key] = refresh
+        refresh()
+    end
+    AddFontSlider("verticalNameSize", L["Name Size"], fontMetrics.verticalNameSize,
+                  function(size) fontMetrics.set("verticalNameSize", size) end)
+    AddFontSlider("verticalLevelSize", L["Level Size"],
+                  fontMetrics.verticalLevelSize, function(size)
+        fontMetrics.set("verticalLevelSize", size)
+    end)
+
+    section:SetHeight(-y + 4)
+    return section
+end
+
+function barSides.CreateSideTab(parent, previous, tooltip, icon, vertical)
+    local tab
+    local ok, created = pcall(CreateFrame, "Frame", nil, parent,
+                              "LargeSideTabButtonTemplate")
+    if ok and created then
+        tab = created
+    else
+        ok, created = pcall(CreateFrame, "CheckButton", nil, parent,
+                            "SpellBookSkillLineTabTemplate")
+        if ok and created then tab = created end
+    end
+    if not tab then return nil end
+    tab.tooltipText = tooltip
+    if tab.Icon and tab.Icon.SetTexture then
+        tab.Icon:SetTexture(icon)
+        if tab.SetFillToInterior then tab:SetFillToInterior(true, 36) end
+    elseif tab.SetNormalTexture then
+        tab:SetNormalTexture(icon)
+    end
+    if previous then
+        tab:SetPoint("TOPLEFT", previous, "BOTTOMLEFT", 0, -2)
+    else
+        -- The dialog border's visible edge sits inside the frame rect.
+        tab:SetPoint("TOPLEFT", parent, "TOPRIGHT", -10, -36)
+    end
+    if tab.SetFrameLevel and parent.GetFrameLevel then
+        tab:SetFrameLevel((parent:GetFrameLevel() or 1) + 20)
+    end
+    local function Activate() barSides.Select(vertical) end
+    if tab.SetCustomOnMouseUpHandler then
+        tab:HookScript("OnMouseDown", function()
+            suppressNextFocusClear = true
+        end)
+        tab:SetCustomOnMouseUpHandler(function(_, button)
+            if button == "LeftButton" then Activate() end
+        end)
+    else
+        tab:SetScript("OnClick", Activate)
+        tab:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText(self.tooltipText or "")
+            GameTooltip:Show()
+        end)
+        tab:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    end
+    if tab.SetChecked then tab:SetChecked(false) end
+    return tab
 end
 
 function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
@@ -2244,6 +2931,17 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
     panelCloseButton:SetPoint("TOPRIGHT")
     panelCloseButton:SetScript("OnClick", function() SetLayoutFocus(nil) end)
 
+    local horizontalTab = barSides.CreateSideTab(settingsPanel, nil,
+                                                 L["Horizontal Layout"],
+                                                 "Interface\\Icons\\INV_Misc_Note_01",
+                                                 false)
+    local verticalTab = barSides.CreateSideTab(settingsPanel, horizontalTab,
+                                               L["Vertical Layout"],
+                                               "Interface\\Icons\\INV_Scroll_03",
+                                               true)
+    settingsPanel.horizontalTab = horizontalTab
+    settingsPanel.verticalTab = verticalTab
+
     local leftColumn = CreateFrame("Frame", nil, settingsPanel)
     leftColumn:SetSize(1, 1)
     local rightColumn = CreateFrame("Frame", nil, settingsPanel)
@@ -2260,7 +2958,7 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
     local widthControl, widthSlider = CreateSizeSlider("VitalFrameWidthSlider",
                                                        settingsPanel)
     widthControl:SetPoint("TOPLEFT", widthLabel, "BOTTOMLEFT", 0, -2)
-    widthSlider:SetMinMaxValues(FRAME_MIN_WIDTH, FRAME_MAX_WIDTH)
+    widthSlider:SetMinMaxValues(barSides.Limits())
     widthSlider:SetValueStep(10)
     if widthSlider.SetObeyStepOnDrag then
         pcall(widthSlider.SetObeyStepOnDrag, widthSlider, true)
@@ -2285,7 +2983,14 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
     widthValueText:SetText(tostring(frameWidth))
 
     widthSlider:SetScript("OnValueChanged", function(_, value)
-        local v = ClampSizeValue(value, FRAME_MIN_WIDTH, FRAME_MAX_WIDTH)
+        if settingsPanel.sizing then
+            if widthValueText then
+                widthValueText:SetText(tostring(math.floor(value + 0.5)))
+            end
+            return
+        end
+        local minW, maxW = barSides.Limits()
+        local v = ClampSizeValue(value, minW, maxW)
         if not vitalFrameFrame or not v then return end
         ApplyFrameSize(v, vitalFrameFrame:GetHeight())
         if widthValueText then widthValueText:SetText(tostring(v)) end
@@ -2309,7 +3014,7 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
                                             "VitalFrameHeightSlider",
                                             settingsPanel)
     heightControl:SetPoint("TOPLEFT", heightLabel, "BOTTOMLEFT", 0, -2)
-    heightSlider:SetMinMaxValues(FRAME_MIN_HEIGHT, FRAME_MAX_HEIGHT)
+    heightSlider:SetMinMaxValues(select(3, barSides.Limits()))
     heightSlider:SetValueStep(10)
     if heightSlider.SetObeyStepOnDrag then
         pcall(heightSlider.SetObeyStepOnDrag, heightSlider, true)
@@ -2334,7 +3039,14 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
     heightValueText:SetText(tostring(frameHeight))
 
     heightSlider:SetScript("OnValueChanged", function(_, value)
-        local v = ClampSizeValue(value, FRAME_MIN_HEIGHT, FRAME_MAX_HEIGHT)
+        if settingsPanel.sizing then
+            if heightValueText then
+                heightValueText:SetText(tostring(math.floor(value + 0.5)))
+            end
+            return
+        end
+        local _, _, minH, maxH = barSides.Limits()
+        local v = ClampSizeValue(value, minH, maxH)
         if not vitalFrameFrame or not v then return end
         if heightValueText then heightValueText:SetText(tostring(v)) end
         ApplyFrameSize(vitalFrameFrame:GetWidth(), v)
@@ -2512,6 +3224,35 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
     optionsLabel:SetPoint("LEFT", rightColumn, "LEFT", 0, 0)
     optionsLabel:SetJustifyH("LEFT")
     optionsLabel:SetText(L["Options"])
+    settingsPanel.optionsLabel = optionsLabel
+    settingsPanel.barListBottom = prevCheck
+    settingsPanel.verticalSection =
+        barSides.BuildVerticalSection(settingsPanel, prevCheck)
+
+    function settingsPanel.ShowLayoutTab(vertical)
+        local section = settingsPanel.verticalSection
+        if section then section:SetShown(vertical and true or false) end
+        local anchor = vertical and section or settingsPanel.barListBottom
+        if settingsPanel.optionsLabel and anchor then
+            settingsPanel.optionsLabel:ClearAllPoints()
+            settingsPanel.optionsLabel:SetPoint("TOP", anchor, "BOTTOM", 0, -12)
+            settingsPanel.optionsLabel:SetPoint("LEFT", rightColumn, "LEFT", 0, 0)
+        end
+        if settingsPanel.horizontalTab and settingsPanel.horizontalTab.SetChecked then
+            settingsPanel.horizontalTab:SetChecked(not vertical)
+        end
+        if settingsPanel.verticalTab and settingsPanel.verticalTab.SetChecked then
+            settingsPanel.verticalTab:SetChecked(vertical and true or false)
+        end
+        barSides.SyncSizeSliders()
+        if settingsPanel.FitOptionsHeight then
+            if Compat.After then
+                Compat.After(0, settingsPanel.FitOptionsHeight)
+            else
+                settingsPanel.FitOptionsHeight()
+            end
+        end
+    end
 
     local characterPositionCheck = CreateFrame("CheckButton", nil, settingsPanel,
                                                "UICheckButtonTemplate")
@@ -2812,6 +3553,8 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
         local needed = (top - lowest) + 53
         settingsPanel:SetHeight(math.ceil(needed))
     end
+    settingsPanel.FitOptionsHeight = FitOptionsHeight
+    settingsPanel.ShowLayoutTab(barSides.Enabled())
     settingsPanel:HookScript("OnShow", function()
         if Compat.After then
             Compat.After(0, FitOptionsHeight)
@@ -2867,12 +3610,7 @@ local function CreateVitalFrame()
 
     local db = GetDB()
     local frameSettings = db and db.profile and db.profile.frame
-    local frameWidth = ClampSizeValue(frameSettings and frameSettings.width,
-                                      FRAME_MIN_WIDTH, FRAME_MAX_WIDTH) or
-                           DEFAULT_FRAME_WIDTH
-    local frameHeight = ClampSizeValue(frameSettings and frameSettings.height,
-                                       FRAME_MIN_HEIGHT, FRAME_MAX_HEIGHT) or
-                            DEFAULT_FRAME_HEIGHT
+    local frameWidth, frameHeight = barSides.SavedSize()
 
     local frame = CreateFrame("Frame", MAIN_FRAME_NAME, UIParent,
                               "BackdropTemplate")
@@ -2991,8 +3729,22 @@ local function CreateVitalFrame()
                 return
             end
             if CursorOverOpenMenu() then return end
+            local overTab = false
+            if vitalFrameSettingsPanel then
+                local horizontalTab = vitalFrameSettingsPanel.horizontalTab
+                local verticalTab = vitalFrameSettingsPanel.verticalTab
+                if horizontalTab and horizontalTab:IsShown() and
+                    horizontalTab:IsMouseOver() then
+                    overTab = true
+                end
+                if verticalTab and verticalTab:IsShown() and
+                    verticalTab:IsMouseOver() then
+                    overTab = true
+                end
+            end
             local overPanel = vitalFrameSettingsPanel and
-                                  vitalFrameSettingsPanel:IsMouseOver()
+                                  (vitalFrameSettingsPanel:IsMouseOver() or
+                                      overTab)
             local overSkills = UI.IsSkillsFrameMouseOver and
                                    UI.IsSkillsFrameMouseOver()
             local overSkillsPanel = UI.IsSkillsSettingsMouseOver and

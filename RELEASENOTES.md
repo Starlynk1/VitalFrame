@@ -1,4 +1,4 @@
-# v1.1.4 beta
+# v1.1.4-beta
 
 - Vertical Layout is a second options tab on the right side of the options panel. Horizontal Layout stays the first tab.
 - In Vertical Layout the bars stay horizontal. Each bar can sit on the left or the right of the name, and bars on the same side stack.

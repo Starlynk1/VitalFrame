@@ -32,6 +32,7 @@ local defaults = {
             lastNamePercent = 50,
             barSize = 12
         },
+        textures = {bars = "Blizzard"},
         bars = {
             enabled = {
                 xpFill = true,
@@ -69,6 +70,7 @@ local defaults = {
             selected = {},
             barFont = "frizqt",
             barFontSize = 12,
+            barTexture = "Blizzard",
             scale = 1,
             frameOpacity = 100,
             backgroundOpacity = 100,

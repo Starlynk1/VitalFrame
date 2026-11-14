@@ -4,7 +4,7 @@
 ## Author: Starlynk
 ## Version: 1.1.4-beta
 ## SavedVariables: VitalFrameDB
-## OptionalDeps: Ace3
+## OptionalDeps: Ace3, LibSharedMedia-3.0
 ## X-Category: UnitFrames
 ## X-License: GPLv3
 ## X-Website: https://github.com/Starlynk1/VitalFrame
@@ -12,6 +12,7 @@
 
 Locales/Locales.xml
 Compat.lua
+SharedMedia.lua
 UI/UI.lua
 UI/SkillsFrame.lua
 VitalFrame.lua

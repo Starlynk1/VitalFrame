@@ -454,6 +454,7 @@ local function AcquireSkillBar(index)
     bar = CreateFrame("StatusBar", nil, skillsFrame)
     bar:SetFrameLevel(skillsFrame:GetFrameLevel() + 3)
     bar:SetStatusBarTexture("Interface\\TARGETINGFRAME\\UI-StatusBar")
+    bar.vitalFrameTextureFile = "Interface\\TARGETINGFRAME\\UI-StatusBar"
     bar:SetMinMaxValues(0, 1)
     bar:SetValue(0)
     bar:SetClipsChildren(true)
@@ -506,6 +507,28 @@ local function GetSkillsBarFont()
     local id = settings and settings.barFont
     if UI.IsFontChoice and UI.IsFontChoice(id) then return id end
     return "frizqt"
+end
+
+local function GetSkillsBarTexture()
+    local settings = GetSkillsSettings()
+    local name = settings and settings.barTexture
+    if UI.IsStatusbarChoice and UI.IsStatusbarChoice(name) then return name end
+    if UI.GetDefaultStatusbar then return UI.GetDefaultStatusbar() end
+    return "Blizzard"
+end
+
+local function GetSkillsBarTextureFile()
+    if UI.GetStatusbarFile then
+        return UI.GetStatusbarFile(GetSkillsBarTexture())
+    end
+    return "Interface\\TARGETINGFRAME\\UI-StatusBar"
+end
+
+local function SetSkillsBarTexture(name)
+    if UI.IsStatusbarChoice and not UI.IsStatusbarChoice(name) then return end
+    local settings = GetSkillsSettings()
+    if settings then settings.barTexture = name end
+    LayoutSkillBars()
 end
 
 local function GetSkillsBarFontSize()
@@ -620,6 +643,9 @@ function LayoutSkillBars()
             else
                 bar.Divider:Hide()
             end
+        end
+        if UI.ApplyStatusBarTexture then
+            UI.ApplyStatusBarTexture(bar, GetSkillsBarTextureFile())
         end
         if bar.LabelText then
             local fontSize = GetSkillsBarFontSize()
@@ -873,6 +899,9 @@ local function RefreshSkillsSettings()
     if skillsSettingsWidgets.BarFontSizeButton then
         skillsSettingsWidgets.BarFontSizeButton.Refresh()
     end
+    if skillsSettingsWidgets.BarTextureButton then
+        skillsSettingsWidgets.BarTextureButton.Refresh()
+    end
     if skillsSettingsWidgets.FrameOpacitySlider then
         skillsSettingsWidgets.FrameOpacitySlider.Refresh()
     end
@@ -986,7 +1015,7 @@ local function CreateSkillsSettingsPanel()
     if not SupportsClassicSkills() or skillsSettingsBuilt then return end
 
     local settingsPanel = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
-    settingsPanel:SetSize(560, 500)
+    settingsPanel:SetSize(560, 550)
     settingsPanel:SetFrameStrata("DIALOG")
     settingsPanel:SetFrameLevel((skillsFrame and skillsFrame:GetFrameLevel() or
                                     1) + 20)
@@ -1256,9 +1285,26 @@ local function CreateSkillsSettingsPanel()
         barsSizeLabel:SetText(L["Size"])
     end
 
+    if UI.CreateTextureDropdown then
+        local barTextureLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                               "GameFontHighlight")
+        barTextureLabel:SetPoint("TOPLEFT",
+                                 skillsSettingsWidgets.BarFontButton or
+                                     barsFontLabel, "BOTTOMLEFT", 0, -12)
+        barTextureLabel:SetJustifyH("LEFT")
+        barTextureLabel:SetText(L["Bar Texture"])
+        skillsSettingsWidgets.BarTextureButton = UI.CreateTextureDropdown(
+                                                     settingsPanel,
+                                                     barTextureLabel,
+                                                     GetSkillsBarTexture,
+                                                     SetSkillsBarTexture, 222,
+                                                     true)
+    end
+
     local opacityLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
                                                         "GameFontHighlightMedium")
-    opacityLabel:SetPoint("TOPLEFT", skillsSettingsWidgets.BarFontButton or
+    opacityLabel:SetPoint("TOPLEFT", skillsSettingsWidgets.BarTextureButton or
+                               skillsSettingsWidgets.BarFontButton or
                                skillsSettingsWidgets.ScaleSlider, "BOTTOMLEFT",
                            -10, -12)
     opacityLabel:SetJustifyH("LEFT")
@@ -1546,6 +1592,8 @@ function UI.ResetSkillsFrame()
         settings.shown = 1
         settings.barFont = "frizqt"
         settings.barFontSize = 12
+        settings.barTexture = UI.GetDefaultStatusbar and
+                                  UI.GetDefaultStatusbar() or "Blizzard"
         settings.scale = 1
         settings.frameOpacity = 100
         settings.backgroundOpacity = 100

@@ -31,7 +31,8 @@ On Retail, use **Edit Mode** to move the frames and open options.
 
 1.  Download from CurseForge / WowUp, or clone this repository into `Interface/AddOns/VitalFrame`.
 2.  Ace3 is optional. If Ace3 is installed, settings use AceDB-3.0. Without it, settings still save in `VitalFrameDB`.
-3.  Enable **Vital Frame** in the addons list.
+3.  LibSharedMedia-3.0 is optional. If it is installed, its fonts and status bar textures appear in the Fonts and Bar Texture pickers. Without it, the built-in Blizzard fonts and textures are listed.
+4.  Enable **Vital Frame** in the addons list.
 
 ## Supported clients
 

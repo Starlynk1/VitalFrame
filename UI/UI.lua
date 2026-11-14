@@ -528,26 +528,68 @@ local FONT_CANDIDATES = {
     {id = "pagetext", label = "Page Text", file = "Fonts\\K_Pagetext.TTF"}
 }
 
+local Media = addonTable.Media
+-- Grouped in one table to stay under Lua 5.1's 200-local limit.
+local mediaUI = {}
+mediaUI.LSM_FONT_PREFIX = "lsm:"
+mediaUI.LSM_GROUP_LABEL = "SharedMedia"
+
 local fontProbe
 local function FontFileAvailable(path)
+    if type(path) ~= "string" or path == "" then return false end
     if not fontProbe then fontProbe = CreateFont("VitalFrameFontProbe") end
     local ok, result = pcall(fontProbe.SetFont, fontProbe, path, 12, "")
     return ok and result ~= false
 end
 
+function mediaUI.NormalizeMediaPath(path)
+    return (tostring(path or ""):gsub("/", "\\"):lower())
+end
+
+-- These tables are filled in place so closures that captured them stay valid
+-- when LibSharedMedia fonts are added later.
 local FONT_OPTIONS = {}
 local FONT_BY_ID = {}
-for _, fontOption in ipairs(FONT_CANDIDATES) do
-    if FontFileAvailable(fontOption.file) then
-        FONT_OPTIONS[#FONT_OPTIONS + 1] = fontOption
-        FONT_BY_ID[fontOption.id] = fontOption
+
+function mediaUI.RebuildFontOptions()
+    wipe(FONT_OPTIONS)
+    wipe(FONT_BY_ID)
+    local seenFiles = {}
+
+    for _, fontOption in ipairs(FONT_CANDIDATES) do
+        if FontFileAvailable(fontOption.file) then
+            FONT_OPTIONS[#FONT_OPTIONS + 1] = fontOption
+            FONT_BY_ID[fontOption.id] = fontOption
+            seenFiles[mediaUI.NormalizeMediaPath(fontOption.file)] = true
+        end
+    end
+    if not FONT_BY_ID.frizqt then
+        local fallback = FONT_CANDIDATES[1]
+        table.insert(FONT_OPTIONS, 1, fallback)
+        FONT_BY_ID.frizqt = fallback
+        seenFiles[mediaUI.NormalizeMediaPath(fallback.file)] = true
+    end
+
+    if not Media then return end
+    for _, name in ipairs(Media.ListFonts()) do
+        local file = Media.FetchFont(name)
+        local fileKey = mediaUI.NormalizeMediaPath(file)
+        -- LSM also registers the stock Blizzard fonts; skip those duplicates.
+        if file and not seenFiles[fileKey] and FontFileAvailable(file) then
+            local option = {
+                id = mediaUI.LSM_FONT_PREFIX .. name,
+                label = name,
+                file = file,
+                group = mediaUI.LSM_GROUP_LABEL
+            }
+            FONT_OPTIONS[#FONT_OPTIONS + 1] = option
+            FONT_BY_ID[option.id] = option
+            seenFiles[fileKey] = true
+        end
     end
 end
-if not FONT_BY_ID.frizqt then
-    local fallback = FONT_CANDIDATES[1]
-    FONT_OPTIONS[#FONT_OPTIONS + 1] = fallback
-    FONT_BY_ID.frizqt = fallback
-end
+
+mediaUI.RebuildFontOptions()
 
 local function GetFontFileForRole(role)
     local db = GetDB()
@@ -571,6 +613,60 @@ local function SetFontChoice(role, id)
     db.profile.fonts = db.profile.fonts or {}
     db.profile.fonts[role] = id
     if vitalFrameFrame then UpdateProgressBarLayout() end
+end
+
+-- Status bar textures (LibSharedMedia "statusbar" media) -------------------
+
+mediaUI.DEFAULT_STATUSBAR = Media and Media.DEFAULT_STATUSBAR or "Blizzard"
+mediaUI.DEFAULT_STATUSBAR_FILE = Media and Media.DEFAULT_STATUSBAR_FILE or
+                                   "Interface\\TargetingFrame\\UI-StatusBar"
+
+function mediaUI.IsStatusbarChoice(name)
+    if Media then return Media.IsStatusbar(name) end
+    return name == mediaUI.DEFAULT_STATUSBAR
+end
+
+function mediaUI.GetStatusbarFile(name)
+    if Media then return Media.FetchStatusbar(name) end
+    return mediaUI.DEFAULT_STATUSBAR_FILE
+end
+
+function mediaUI.ApplyStatusBarTexture(bar, file)
+    if not bar or not bar.SetStatusBarTexture then return end
+    file = file or mediaUI.DEFAULT_STATUSBAR_FILE
+    if bar.vitalFrameTextureFile == file then return end
+    -- Keep the fill colour; older clients store it on the texture object.
+    local r, g, b, a
+    if bar.GetStatusBarColor then r, g, b, a = bar:GetStatusBarColor() end
+    bar:SetStatusBarTexture(file)
+    if r and bar.SetStatusBarColor then bar:SetStatusBarColor(r, g, b, a) end
+    bar.vitalFrameTextureFile = file
+end
+
+function mediaUI.GetBarTextureChoice()
+    local db = GetDB()
+    local textures = db and db.profile and db.profile.textures
+    local name = textures and textures.bars
+    if mediaUI.IsStatusbarChoice(name) then return name end
+    return mediaUI.DEFAULT_STATUSBAR
+end
+
+function mediaUI.ApplyMainBarTextures()
+    if not vitalFrameFrame or not vitalFrameFrame.ProgressBarsByKey then return end
+    local file = mediaUI.GetStatusbarFile(mediaUI.GetBarTextureChoice())
+    for _, bar in pairs(vitalFrameFrame.ProgressBarsByKey) do
+        mediaUI.ApplyStatusBarTexture(bar, file)
+        if bar.BgFill then mediaUI.ApplyStatusBarTexture(bar.BgFill, file) end
+    end
+end
+
+function mediaUI.SetBarTextureChoice(name)
+    if not mediaUI.IsStatusbarChoice(name) then return end
+    local db = GetDB()
+    if not db or not db.profile then return end
+    db.profile.textures = db.profile.textures or {}
+    db.profile.textures.bars = name
+    mediaUI.ApplyMainBarTextures()
 end
 
 local fontMetrics = {}
@@ -1953,6 +2049,9 @@ local function CreateSizeSlider(name, parent, width)
 end
 
 local fontDropdownSerial = 0
+mediaUI.mediaDropdownSerial = 0
+mediaUI.MEDIA_MENU_MAX_HEIGHT = 360
+mediaUI.CLASSIC_MENU_PAGE_SIZE = 25
 
 local function FontChoiceLabel(getId)
     local choice = FONT_BY_ID[getId()] or FONT_OPTIONS[1]
@@ -1960,24 +2059,36 @@ local function FontChoiceLabel(getId)
 end
 
 local previewFonts = {}
+mediaUI.previewFontSerial = 0
 
 local function PreviewFontObject(option, size)
     if not option then return nil end
     size = size or 14
-    local key = option.id .. tostring(size)
+    local key = tostring(option.file) .. "|" .. tostring(size)
     local font = previewFonts[key]
     if font then return font end
-    font = CreateFont("VitalFramePreview" .. key)
+    mediaUI.previewFontSerial = mediaUI.previewFontSerial + 1
+    font = CreateFont("VitalFramePreview" .. mediaUI.previewFontSerial)
     local ok, result = pcall(font.SetFont, font, option.file, size, "")
     if not ok or result == false then return nil end
     previewFonts[key] = font
     return font
 end
 
+function mediaUI.SetClosedDropdownText(dropdown, text)
+    if not dropdown then return end
+    text = text or ""
+    if dropdown.SetDefaultText then dropdown:SetDefaultText(text) end
+    if dropdown.Text then dropdown.Text:SetText(text) end
+    if dropdown.GetName and dropdown:GetName() and UIDropDownMenu_SetText then
+        UIDropDownMenu_SetText(dropdown, text)
+    end
+end
+
 local function ApplyClosedDropdownFont(dropdown, option)
     if not dropdown or not option then return end
     local fontObject = PreviewFontObject(option, 12)
-    if dropdown.SetDefaultText then dropdown:SetDefaultText(option.label) end
+    mediaUI.SetClosedDropdownText(dropdown, option.label)
     if dropdown.Text and fontObject then
         dropdown.Text:SetFontObject(fontObject)
         dropdown.Text:SetText(option.label)
@@ -1989,8 +2100,23 @@ local function ApplyClosedDropdownFont(dropdown, option)
     end
 end
 
-local function CreateModernFontDropdown(parent, label, getId, setId, width,
-                                         below)
+-- spec fields:
+--   options()            -> array of {id, label, file, group?}
+--   selected()           -> the selected option (or nil)
+--   select(option)       -> store the choice
+--   applyClosed(dd, opt) -> optional, draws the closed dropdown
+--   initRow(button, opt) -> optional, decorates a modern menu row
+--   classicInfo(info, opt) -> optional, decorates a classic menu row
+function mediaUI.RefreshMediaDropdown(dropdown, spec)
+    local option = spec.selected()
+    if spec.applyClosed then
+        spec.applyClosed(dropdown, option)
+    else
+        mediaUI.SetClosedDropdownText(dropdown, option and option.label)
+    end
+end
+
+function mediaUI.CreateModernMediaDropdown(parent, label, spec, width, below)
     if not MenuUtil then return nil end
     local ok, dropdown = pcall(CreateFrame, "DropdownButton", nil, parent,
                                "WowStyle1DropdownTemplate")
@@ -2010,30 +2136,37 @@ local function CreateModernFontDropdown(parent, label, getId, setId, width,
         if menu.SetFrameLevel then pcall(menu.SetFrameLevel, menu, 2000) end
     end)
 
-    local function SelectedOption()
-        return FONT_BY_ID[getId()] or FONT_OPTIONS[1]
-    end
+    dropdown.Refresh = function() mediaUI.RefreshMediaDropdown(dropdown, spec) end
 
     dropdown:SetupMenu(function(_, rootDescription)
         if not rootDescription.CreateButton then return end
-        for _, option in ipairs(FONT_OPTIONS) do
-            local id = option.id
+        if rootDescription.SetScrollMode then
+            rootDescription:SetScrollMode(mediaUI.MEDIA_MENU_MAX_HEIGHT)
+        end
+        local lastGroup
+        local first = true
+        for _, option in ipairs(spec.options()) do
+            if option.group and option.group ~= lastGroup then
+                if not first and rootDescription.CreateDivider then
+                    rootDescription:CreateDivider()
+                end
+                if rootDescription.CreateTitle then
+                    rootDescription:CreateTitle(option.group)
+                end
+            end
+            lastGroup = option.group
+            first = false
             local row = rootDescription:CreateButton(option.label, function()
-                setId(id)
+                spec.select(option)
                 if Compat.After then
-                    Compat.After(0, function()
-                        ApplyClosedDropdownFont(dropdown, option)
-                    end)
+                    Compat.After(0, dropdown.Refresh)
                 else
-                    ApplyClosedDropdownFont(dropdown, option)
+                    dropdown.Refresh()
                 end
             end)
             if row and row.AddInitializer then
                 row:AddInitializer(function(button)
-                    local fontObject = PreviewFontObject(option, 14)
-                    if button.fontString and fontObject then
-                        button.fontString:SetFontObject(fontObject)
-                    end
+                    if spec.initRow then spec.initRow(button, option) end
                     if button.HookScript and not button.vitalFrameKeepsFocus then
                         button.vitalFrameKeepsFocus = true
                         button:HookScript("OnMouseDown", function()
@@ -2046,21 +2179,17 @@ local function CreateModernFontDropdown(parent, label, getId, setId, width,
         end
     end)
 
-    dropdown.Refresh = function()
-        ApplyClosedDropdownFont(dropdown, SelectedOption())
-    end
     dropdown.Refresh()
     return dropdown
 end
 
-local function CreateClassicFontDropdown(parent, label, getId, setId, width,
-                                          below)
+function mediaUI.CreateClassicMediaDropdown(parent, label, spec, width, below)
     if not UIDropDownMenu_Initialize or not UIDropDownMenu_SetText then
         return nil
     end
-    fontDropdownSerial = fontDropdownSerial + 1
-    local dropdown = CreateFrame("Frame", "VitalFrameFontDropdown" ..
-                                     fontDropdownSerial, parent,
+    mediaUI.mediaDropdownSerial = mediaUI.mediaDropdownSerial + 1
+    local dropdown = CreateFrame("Frame", "VitalFrameMediaDropdown" ..
+                                     mediaUI.mediaDropdownSerial, parent,
                                  "UIDropDownMenuTemplate")
     if below then
         dropdown:SetPoint("TOPLEFT", label, "BOTTOMLEFT", -16, -2)
@@ -2069,34 +2198,129 @@ local function CreateClassicFontDropdown(parent, label, getId, setId, width,
     end
     UIDropDownMenu_SetWidth(dropdown, (width or 170) - 20)
     UIDropDownMenu_JustifyText(dropdown, "LEFT")
-    UIDropDownMenu_Initialize(dropdown, function()
-        for _, option in ipairs(FONT_OPTIONS) do
-            local info = UIDropDownMenu_CreateInfo()
-            info.text = option.label
-            info.notCheckable = true
-            info.fontObject = PreviewFontObject(option, 14)
-            info.func = function()
-                setId(option.id)
-                UIDropDownMenu_SetText(dropdown, option.label)
-                ApplyClosedDropdownFont(dropdown, option)
-            end
-            UIDropDownMenu_AddButton(info)
+
+    dropdown.Refresh = function() mediaUI.RefreshMediaDropdown(dropdown, spec) end
+
+    local function AddOption(option, level)
+        local info = UIDropDownMenu_CreateInfo()
+        info.text = option.label
+        info.notCheckable = true
+        if spec.classicInfo then spec.classicInfo(info, option) end
+        info.func = function()
+            spec.select(option)
+            dropdown.Refresh()
         end
-    end)
-    UIDropDownMenu_SetText(dropdown, FontChoiceLabel(getId))
-    ApplyClosedDropdownFont(dropdown, FONT_BY_ID[getId()] or FONT_OPTIONS[1])
-    dropdown.Refresh = function()
-        local option = FONT_BY_ID[getId()] or FONT_OPTIONS[1]
-        UIDropDownMenu_SetText(dropdown, option.label)
-        ApplyClosedDropdownFont(dropdown, option)
+        UIDropDownMenu_AddButton(info, level)
     end
+
+    UIDropDownMenu_Initialize(dropdown, function(_, level, menuList)
+        level = level or 1
+        local options = spec.options()
+
+        -- Large SharedMedia collections overflow the classic menu, so split
+        -- them into alphabetical pages shown as submenus.
+        if #options <= mediaUI.CLASSIC_MENU_PAGE_SIZE then
+            if level == 1 then
+                for _, option in ipairs(options) do AddOption(option, 1) end
+            end
+            return
+        end
+
+        if level == 1 then
+            for first = 1, #options, mediaUI.CLASSIC_MENU_PAGE_SIZE do
+                local last = math.min(first + mediaUI.CLASSIC_MENU_PAGE_SIZE - 1,
+                                      #options)
+                local info = UIDropDownMenu_CreateInfo()
+                info.text = options[first].label .. " - " .. options[last].label
+                info.notCheckable = true
+                info.hasArrow = true
+                info.menuList = first
+                UIDropDownMenu_AddButton(info, 1)
+            end
+            return
+        end
+
+        local first = tonumber(menuList) or 1
+        local last = math.min(first + mediaUI.CLASSIC_MENU_PAGE_SIZE - 1, #options)
+        for index = first, last do AddOption(options[index], level) end
+    end)
+
+    dropdown.Refresh()
     return dropdown
 end
 
+function mediaUI.CreateMediaDropdown(parent, label, spec, width, below)
+    return mediaUI.CreateModernMediaDropdown(parent, label, spec, width, below) or
+               mediaUI.CreateClassicMediaDropdown(parent, label, spec, width, below)
+end
+
 local function CreateFontDropdown(parent, label, getId, setId, width, below)
-    return CreateModernFontDropdown(parent, label, getId, setId, width, below) or
-               CreateClassicFontDropdown(parent, label, getId, setId, width,
-                                         below)
+    return mediaUI.CreateMediaDropdown(parent, label, {
+        options = function() return FONT_OPTIONS end,
+        selected = function() return FONT_BY_ID[getId()] or FONT_OPTIONS[1] end,
+        select = function(option) setId(option.id) end,
+        applyClosed = ApplyClosedDropdownFont,
+        initRow = function(button, option)
+            local fontObject = PreviewFontObject(option, 14)
+            if button.fontString and fontObject then
+                button.fontString:SetFontObject(fontObject)
+            end
+        end,
+        classicInfo = function(info, option)
+            info.fontObject = PreviewFontObject(option, 14)
+        end
+    }, width, below)
+end
+
+mediaUI.TEXTURE_PREVIEW_COLOR = {0.34, 0.69, 0.17, 0.75}
+
+function mediaUI.StatusbarOptions()
+    local options = {}
+    if Media then
+        for _, entry in ipairs(Media.ListStatusbars()) do
+            options[#options + 1] = {
+                id = entry.name,
+                label = entry.name,
+                file = entry.file
+            }
+        end
+    end
+    if #options == 0 then
+        options[1] = {
+            id = mediaUI.DEFAULT_STATUSBAR,
+            label = mediaUI.DEFAULT_STATUSBAR,
+            file = mediaUI.DEFAULT_STATUSBAR_FILE
+        }
+    end
+    return options
+end
+
+function mediaUI.CreateTextureDropdown(parent, label, getName, setName, width,
+                                     below)
+    return mediaUI.CreateMediaDropdown(parent, label, {
+        options = mediaUI.StatusbarOptions,
+        selected = function()
+            local name = getName()
+            return {id = name, label = name, file = mediaUI.GetStatusbarFile(name)}
+        end,
+        select = function(option) setName(option.id) end,
+        initRow = function(button, option)
+            -- AttachTexture regions are released with the row, so pooled
+            -- menu buttons never keep a stale preview.
+            if not button.AttachTexture then return end
+            local ok, texture = pcall(button.AttachTexture, button)
+            if not ok or not texture then return end
+            texture:SetDrawLayer("BACKGROUND")
+            texture:ClearAllPoints()
+            texture:SetPoint("TOPLEFT", button, "TOPLEFT", 2, -3)
+            texture:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -2, 3)
+            texture:SetTexture(option.file)
+            texture:SetVertexColor(mediaUI.TEXTURE_PREVIEW_COLOR[1],
+                                   mediaUI.TEXTURE_PREVIEW_COLOR[2],
+                                   mediaUI.TEXTURE_PREVIEW_COLOR[3],
+                                   mediaUI.TEXTURE_PREVIEW_COLOR[4])
+        end
+    }, width, below)
 end
 
 function fontMetrics.applyClosedSizeText(dropdown, size)
@@ -2379,6 +2603,9 @@ local function UpdateSettingsPanelVisibility()
         if vitalFrameSettingsPanel.barsFontButton then
             vitalFrameSettingsPanel.barsFontButton.Refresh()
         end
+        if vitalFrameSettingsPanel.barTextureButton then
+            vitalFrameSettingsPanel.barTextureButton.Refresh()
+        end
         if vitalFrameSettingsPanel.nameSizeButton then
             vitalFrameSettingsPanel.nameSizeButton.Refresh()
         end
@@ -2586,6 +2813,7 @@ local function ApplySavedSettings()
         UI.SetSkillsFrameShown(showSkills)
     end
 
+    mediaUI.ApplyMainBarTextures()
     UpdateProgressBarLayout()
     if UI.UpdateSkillsFrameEditMode then UI.UpdateSkillsFrameEditMode() end
     if vitalFrameSettingsPanel then UpdateSettingsPanelVisibility() end
@@ -2654,6 +2882,7 @@ local function ResetToDefaults()
             lastNamePercent = 50,
             barSize = 12
         }
+        db.profile.textures = {bars = mediaUI.DEFAULT_STATUSBAR}
         db.profile.frame = db.profile.frame or {}
         db.profile.frame.frameOpacity = 100
         db.profile.frame.backgroundOpacity = 100
@@ -2666,6 +2895,10 @@ local function ResetToDefaults()
         vitalFrameSettingsPanel.scaleSlider.Refresh()
     end
     ApplyFrameTheme()
+    mediaUI.ApplyMainBarTextures()
+    if vitalFrameSettingsPanel and vitalFrameSettingsPanel.barTextureButton then
+        vitalFrameSettingsPanel.barTextureButton.Refresh()
+    end
     UpdateProgressBarLayout()
     barSides.RefreshChecks()
 end
@@ -3494,9 +3727,22 @@ function CreateVitalFrameSettings(frame, frameWidth, frameHeight)
         barsSizeLabel:SetText(L["Size"])
     end
 
+    local barTextureLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
+                                                           "GameFontHighlight")
+    barTextureLabel:SetPoint("TOPLEFT", settingsPanel.barsFontButton or
+                                 barsFontLabel, "BOTTOMLEFT", 0, -12)
+    barTextureLabel:SetJustifyH("LEFT")
+    barTextureLabel:SetText(L["Bar Texture"])
+    settingsPanel.barTextureButton = mediaUI.CreateTextureDropdown(settingsPanel,
+                                                           barTextureLabel,
+                                                           mediaUI.GetBarTextureChoice,
+                                                           mediaUI.SetBarTextureChoice,
+                                                           222, true)
+
     local opacityLabel = settingsPanel:CreateFontString(nil, "OVERLAY",
                                                         "GameFontHighlightMedium")
-    opacityLabel:SetPoint("TOPLEFT", settingsPanel.barsFontButton or
+    opacityLabel:SetPoint("TOPLEFT", settingsPanel.barTextureButton or
+                               settingsPanel.barsFontButton or
                                settingsPanel.scaleSlider, "BOTTOMLEFT", -10, -12)
     opacityLabel:SetJustifyH("LEFT")
     opacityLabel:SetText(L["Opacity"])
@@ -3875,7 +4121,7 @@ local function CreateVitalFrame()
         local bar = CreateFrame("StatusBar", nil, frame)
         bar:SetFrameLevel(frame:GetFrameLevel() + 3)
         bar:SetSize(usableWidth, barHeight)
-        bar:SetStatusBarTexture("Interface\\TARGETINGFRAME\\UI-StatusBar")
+        mediaUI.ApplyStatusBarTexture(bar, mediaUI.GetStatusbarFile(mediaUI.GetBarTextureChoice()))
         bar:SetMinMaxValues(0, 1)
         if key == "petXp" and WOW_PROJECT_ID == WOW_PROJECT_MAINLINE then
             bar:SetValue(1)
@@ -3899,8 +4145,8 @@ local function CreateVitalFrame()
             local restedFill = CreateFrame("StatusBar", nil, bar)
             restedFill:SetAllPoints(bar)
             restedFill:SetFrameLevel(bar:GetFrameLevel() - 1)
-            restedFill:SetStatusBarTexture(
-                "Interface\\TARGETINGFRAME\\UI-StatusBar")
+            mediaUI.ApplyStatusBarTexture(restedFill,
+                                  mediaUI.GetStatusbarFile(mediaUI.GetBarTextureChoice()))
             restedFill:SetMinMaxValues(0, 1)
             restedFill:SetValue(0)
             restedFill:SetStatusBarColor(0.2, 0.35, 0.95, 1)
@@ -3983,6 +4229,13 @@ function UI.GetFontFileById(id)
     return choice.file
 end
 function UI.IsFontChoice(id) return FONT_BY_ID[id] ~= nil end
+function UI.IsStatusbarChoice(name) return mediaUI.IsStatusbarChoice(name) end
+function UI.GetStatusbarFile(name) return mediaUI.GetStatusbarFile(name) end
+function UI.GetDefaultStatusbar() return mediaUI.DEFAULT_STATUSBAR end
+function UI.ApplyStatusBarTexture(bar, file) mediaUI.ApplyStatusBarTexture(bar, file) end
+function UI.CreateTextureDropdown(parent, label, getName, setName, width, below)
+    return mediaUI.CreateTextureDropdown(parent, label, getName, setName, width, below)
+end
 function UI.CreateFontDropdown(parent, label, getId, setId, width, below)
     return CreateFontDropdown(parent, label, getId, setId, width, below)
 end
@@ -4037,3 +4290,25 @@ function UI.SetLevelText(level) SetLevelText(level) end
 function UI.UpdateNameText() UpdateNameText() end
 
 CreateVitalFrame()
+
+-- Fonts and textures registered by other addons after VitalFrame loaded
+-- become selectable, and saved choices that were waiting on them apply.
+if Media and Media.OnChanged then
+    Media.OnChanged(function()
+        mediaUI.RebuildFontOptions()
+        if vitalFrameFrame then
+            mediaUI.ApplyMainBarTextures()
+            UpdateProgressBarLayout()
+        end
+        local panel = vitalFrameSettingsPanel
+        if panel then
+            for _, key in ipairs({"nameFontButton", "levelFontButton",
+                                  "barsFontButton", "barTextureButton"}) do
+                local button = panel[key]
+                if button and button.Refresh then button.Refresh() end
+            end
+        end
+        if UI.LayoutSkillBars then UI.LayoutSkillBars() end
+        if UI.RefreshSkillsSettings then UI.RefreshSkillsSettings() end
+    end)
+end

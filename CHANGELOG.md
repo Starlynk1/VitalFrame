@@ -1,5 +1,11 @@
 # Vital Frame
 
+## Unreleased
+
+- Fonts registered with LibSharedMedia-3.0 appear in every font picker, under a SharedMedia heading.
+- Pick a Bar Texture for the main frame and for the Skills frame. Any LibSharedMedia status bar texture can be used.
+- Fonts and textures that other addons register after Vital Frame loads become available without a reload.
+
 ## [v1.1.4-beta](https://github.com/Starlynk1/VitalFrame/tree/v1.1.4-beta) (2026-11-11)
 [Full Changelog](https://github.com/Starlynk1/VitalFrame/commits/v1.1.4-beta) [Previous Releases](https://github.com/Starlynk1/VitalFrame/releases)
 
